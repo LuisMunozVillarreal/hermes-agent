@@ -3756,12 +3756,13 @@ class BasePlatformAdapter(ABC):
             hi = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", str(hi))), hi)
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
+    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str], Optional[str]]:
+        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path, error_notice)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
         post-handler."""
         paths: List[str] = []
         requested_path = None
+        error_notice = None
         try:
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
             if check_tts_requirements():
@@ -3772,12 +3773,14 @@ class BasePlatformAdapter(ABC):
                 requested_path = build_auto_tts_output_path(self.platform)
                 tts_data = _json.loads(await asyncio.to_thread(
                     text_to_speech_tool, text=speech_text, output_path=requested_path))
-                if tts_data.get("success", True):
-                    raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-                    paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
+                if not tts_data.get("success", False):
+                    raise RuntimeError(tts_data.get("error") or "TTS tool returned success=false")
+                raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
+                paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
         except Exception as tts_err:
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-        return paths, requested_path
+            error_notice = "Audio was not sent because TTS failed with the configured provider."
+        return paths, requested_path, error_notice
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4134,10 +4137,10 @@ class BasePlatformAdapter(ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                _tts_paths, _tts_requested_path = [], None
+                _tts_paths, _tts_requested_path, _tts_error_notice = [], None, None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _tts_paths, _tts_requested_path, _tts_error_notice = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):
@@ -4151,6 +4154,8 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                if _tts_error_notice and text_content and not _tts_caption_delivered:
+                    text_content = f"{_tts_error_notice}\n\n{text_content}"
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
