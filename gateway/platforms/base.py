@@ -4062,8 +4062,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
     async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
-                                   ) -> tuple[list[str], Optional[str]]:
-        """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
+                                   ) -> tuple[list[str], Optional[str], Optional[str]]:
+        """``(existing_paths, requested_path, error_notice)``, synthesized in ``source``'s profile scope (the turn's
         scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
         from gateway.platforms.base_auto_tts import synthesize_auto_tts
         return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
@@ -4399,10 +4399,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                _tts_paths, _tts_requested_path = [], None
+                _tts_paths, _tts_requested_path, _tts_error_notice = [], None, None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
+                    _tts_paths, _tts_requested_path, _tts_error_notice = await self._synthesize_auto_tts(text_content, event.source)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):
@@ -4416,6 +4416,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                if _tts_error_notice and text_content and not _tts_caption_delivered:
+                    text_content = f"{_tts_error_notice}\n\n{text_content}"
                 # Suspend the typing refresh before the first delivery attempt, not just in
                 # the turn's finally (#117300): if the final send stalls (platform accepted it
                 # but the HTTP ack never returns), control never reaches the finally, and
