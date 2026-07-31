@@ -28,7 +28,7 @@ def _synthesize(text: str, output_path: str) -> list[str]:
     """Worker-thread half: run the TTS tool and keep the files it reports that exist."""
     from tools.tts_tool import text_to_speech_tool
     tts_data = json.loads(text_to_speech_tool(text=text, output_path=output_path))
-    if not tts_data.get("success", True):
+    if not tts_data.get("success", False):
         raise RuntimeError("TTS tool returned success=false")
     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
     return [str(path) for path in raw_tts_paths if path and Path(path).exists()]
@@ -49,6 +49,8 @@ async def synthesize_auto_tts(adapter, text_content: str, source, output_path_fo
                     raise ValueError("Empty text after markdown cleanup")
                 requested_path = output_path_for(adapter.platform)
                 paths = await asyncio.to_thread(_synthesize, speech_text, requested_path)
+            else:
+                raise RuntimeError("TTS provider requirements are unavailable")
     except Exception as tts_err:  # an auto voice reply never fails the text reply it accompanies
         logger.warning("[%s] Auto-TTS failed: %s", adapter.name, tts_err, exc_info=True)
         error_notice = "Audio was not sent because TTS failed with the configured provider."
