@@ -230,7 +230,9 @@ class GatewayInboundTranscriptionMixin:
         from gateway.run import _event_media_is_stt_input
         return [
             path for i, path in enumerate(getattr(event, "media_urls", None) or [])
-            if _event_media_is_stt_input(event, i)
+            if _event_media_is_stt_input(
+                event, i, transcribe_attachments=getattr(self.config, "stt_transcribe_audio_attachments", False),
+            )
         ]
 
     async def _transcribe_pending_audio_event_once(
