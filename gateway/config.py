@@ -966,6 +966,11 @@ class GatewayConfig:
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    # Whether audio *file* attachments (MessageType.AUDIO — e.g. .mp3/.m4a
+    # uploaded as files) enter the automatic STT pipeline like native voice
+    # messages. Default False preserves upstream behavior: such files are
+    # handed to the agent as raw paths instead. Opt in via stt.transcribe_audio_attachments.
+    stt_transcribe_audio_attachments: bool = False
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -1148,6 +1153,7 @@ class GatewayConfig:
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
+            "stt_transcribe_audio_attachments": self.stt_transcribe_audio_attachments,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -1213,6 +1219,13 @@ class GatewayConfig:
         if stt_echo_transcripts is None:
             stt_echo_transcripts = (
                 data.get("stt", {}).get("echo_transcripts")
+                if isinstance(data.get("stt"), dict)
+                else None
+            )
+        stt_transcribe_audio_attachments = data.get("stt_transcribe_audio_attachments")
+        if stt_transcribe_audio_attachments is None:
+            stt_transcribe_audio_attachments = (
+                data.get("stt", {}).get("transcribe_audio_attachments")
                 if isinstance(data.get("stt"), dict)
                 else None
             )
@@ -1333,6 +1346,9 @@ class GatewayConfig:
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
+            stt_transcribe_audio_attachments=_coerce_bool(
+                stt_transcribe_audio_attachments, False
+            ),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
