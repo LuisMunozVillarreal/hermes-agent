@@ -2504,11 +2504,20 @@ def _event_media_is_audio(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "audio/", frozenset({MessageType.VOICE, MessageType.AUDIO}))
 
 
-def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+def _event_media_is_stt_input(event, index: int, transcribe_attachments: bool = False) -> bool:
+    """True when an audio attachment should enter the automatic STT pipeline.
+
+    Native voice messages (MessageType.VOICE) and anything with an audio/*
+    MIME always qualify. Audio *file* attachments (MessageType.AUDIO — e.g.
+    .mp3/.m4a uploaded as files) are excluded by default and only qualify
+    when ``transcribe_attachments`` is True (config:
+    ``stt.transcribe_audio_attachments``). Documents never qualify.
+    """
     message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+    if message_type == MessageType.DOCUMENT:
         return False
+    if message_type == MessageType.AUDIO:
+        return transcribe_attachments
     return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
 
 
