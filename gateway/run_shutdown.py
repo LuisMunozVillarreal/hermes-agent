@@ -1572,7 +1572,7 @@ class GatewayShutdownMixin:
             return _interrupted
 
         def _interrupt_delegations() -> None:
-            from tools.async_delegation import interrupt_all as _interrupt_async
+            from tools.async_delegation import begin_shutdown as _interrupt_async
             _count_step(
                 "Shutdown (%s): interrupted %d background delegation(s)",
                 lambda: _interrupt_async(reason=f"gateway shutdown ({phase})"),

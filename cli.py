@@ -784,8 +784,8 @@ def _stop_cli_wake_word() -> None:
 
 
 def _interrupt_async_delegations() -> None:
-    from tools.async_delegation import interrupt_all
-    interrupt_all(reason="CLI shutdown")
+    from tools.async_delegation import begin_shutdown
+    begin_shutdown(reason="CLI shutdown")
 
 
 def _shutdown_mcp_servers() -> None:

@@ -9,8 +9,9 @@ import contextvars
 import json
 import logging
 import time
+import threading
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
@@ -48,6 +49,9 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+
+    build_children: Any = None
+    stop_requested: Any = field(default_factory=threading.Event)
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -159,6 +163,19 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     children) so each group JOINS only on itself. Live transcripts are finalized but retained as the full-fidelity
     record (retention pruning happens on future dispatches)."""
     from tools.delegation_live_log import update_manifest_statuses
+    if batch.stop_requested.is_set():
+        raise InterruptedError("Delegation interrupted before child construction")
+    if batch.build_children is not None:
+        batch.children = batch.build_children([i for i, _, _ in batch.children])
+        batch.build_children = None
+        if not honor_parent_interrupt:
+            for _, _, child in batch.children:
+                _detach_child(batch.parent_agent, child)
+    if batch.stop_requested.is_set():
+        for _, _, child in batch.children:
+            _signal_child_stop(child, "Async delegation cancelled")
+            child.close()
+        raise InterruptedError("Delegation interrupted during child construction")
     results: list = []
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
@@ -177,6 +194,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    lingering = [getattr(c, "_delegate_lingering_future", None) for _, _, c in batch.children]
+    lingering = [f for f in lingering if f is not None and not f.done()]
+    if lingering:
+        combined["_lingering_futures"] = lingering
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -360,8 +381,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     child_agents = [c for (_, _, c) in unit.children]
 
     def _interrupt():
-        for c in child_agents:
-            _signal_child_stop(c, "Async delegation cancelled")
+        unit.stop_requested.set()
+        for _, _, c in unit.children:
+            if c is not None:
+                _signal_child_stop(c, "Async delegation cancelled")
 
     return dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.
@@ -371,7 +394,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        progress_fn=lambda: _batch_progress_token([c for _, _, c in unit.children if c is not None]), **routing,
     )
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
@@ -385,52 +408,48 @@ def _dispatch_background(batch: _Batch) -> str:
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity."""
-    from tools.delegate_tool import _get_max_async_children
+    from tools import delegate_tool as origin
     wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:
-        logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
-
-    parent_agent = batch.parent_agent
-    session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
+    session_key, origin_ui = _resolve_async_session_key(batch.parent_agent, batch.origin_ui_session_id)
     routing = dict(
-        session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
-        parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
+        session_key=session_key, origin_ui_session_id=origin_ui, origin_session_id=wake_sid,
+        parent_session_id=getattr(batch.parent_agent, "session_id", None),
+        max_async_children=origin._get_max_async_children(),
+        max_queued_delegations=origin._get_max_queued_delegations(),
+        min_available_memory_bytes=origin._get_min_available_memory_bytes(),
+        resume_available_memory_bytes=origin._get_resume_available_memory_bytes(),
+        max_memory_psi_avg10=origin._get_max_memory_psi_avg10(),
+        resume_memory_psi_avg10=origin._get_resume_memory_psi_avg10(),
+        queue_timeout_seconds=origin._get_queue_timeout_seconds(),
     )
-
     units = _units_of(batch)
-    dispatched: List[tuple[_Batch, str]] = []
-    inline_results: List[dict] = []
-    slot_key: Optional[str] = None
+    accepted = []
+    rejected = []
+    queued = []
     for k, unit in enumerate(units):
-        # One unit keeps the live-transcript directory's id so the returned delegation_id matches
-        # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
-        unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
-        unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
-        # The worker can start before admission returns. Detach only this unit:
-        # unsubmitted units must still receive parent stops while a fallback runs.
-        for _, _, child in unit.children:
-            _detach_child(parent_agent, child)
-        dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
-        if dispatch.get("status") == "dispatched":
-            slot_key = slot_key or dispatch["delegation_id"]
-            dispatched.append((unit, dispatch["delegation_id"]))
-            continue
-        _restore_parent_cancellation(unit)
-        if not dispatched:
-            logger.info(
-                "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
-                dispatch.get("error", "rejected"),
-            )
-            return _run_sync_with_note(batch, "at_capacity")
-        # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
-        # the unit inline so no task is silently dropped.
-        logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit)["results"])
-    payload = _dispatched_payload(batch, dispatched)
-    if inline_results:
-        payload["inline_results"] = inline_results
+        unit.stop_requested = threading.Event()
+        unit.unit_id = (batch.live_deleg_id if len(units) == 1 else
+                        f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None) or _new_delegation_id()
+        dispatch = _dispatch_unit(unit, unit.unit_id, batch.live_deleg_id, routing)
+        if dispatch.get("status") in {"dispatched", "queued"}:
+            accepted.append((unit, dispatch["delegation_id"]))
+            if dispatch["status"] == "queued":
+                queued.append(dispatch)
+        else:
+            rejected.append({**dispatch, "task_indexes": [i for i, _, _ in unit.children]})
+    if not accepted:
+        return json.dumps({"status": "rejected", "error": rejected[0].get("error", "Delegation rejected"),
+                           "rejected_units": rejected}, ensure_ascii=False)
+    payload = _dispatched_payload(batch, accepted)
+    if queued:
+        payload.update(status="queued" if len(queued) == len(accepted) else "dispatched",
+                       queued_units=queued, queue_reason=queued[0].get("queue_reason", "capacity"))
+    if rejected:
+        payload["rejected_units"] = rejected
     return json.dumps(payload, ensure_ascii=False)
+
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""

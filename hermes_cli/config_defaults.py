@@ -1276,9 +1276,15 @@ DEFAULT_CONFIG = {
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
         # "none" (empty = inherit)
         "reasoning_effort": "",
-        # Max parallel children per batch AND max concurrent background delegation units; async
-        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        # Shared child slots for background singles and batches; excess work queues.
+        # Floor 1, no ceiling; resource gates are disabled by default.
         "max_concurrent_children": 10,
+        "max_queued_delegations": 8,
+        "queue_timeout_seconds": 3600,  # 0 disables expiry
+        "min_available_memory_mb": 0,
+        "resume_available_memory_mb": 0,  # 0 follows the admission floor
+        "max_memory_psi_avg10": 0,
+        "resume_memory_psi_avg10": 0,  # 0 follows the admission ceiling
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,

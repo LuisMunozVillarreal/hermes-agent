@@ -226,7 +226,9 @@ retry.
 
 This does not resume child execution after a crash. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because
-Hermes cannot prove whether its external side effects happened. Pending and
+Hermes cannot prove whether its external side effects happened. A delegation
+that was still `queued` (never started) is recorded as `interrupted` —
+"cancelled before start" — since Hermes can prove it never ran. Pending and
 delivered records are bounded and profile-local.
 
 ### Child background-process notifications
@@ -387,6 +389,28 @@ Error text is reduced to the single most informative line (the exception message
 With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
 
+## Background Admission Queue
+
+Background delegations share a process-wide child-slot budget. A batch reserves
+one slot per child; when it cannot reserve every required slot immediately, the
+whole call enters a bounded FIFO rather than running synchronously and bypassing
+the limit. Optional memory-headroom and Linux memory-PSI gates can also hold
+work in the same queue. On Linux, the headroom probe uses the smaller of host
+`MemAvailable` and the current cgroup's `memory.high`/`memory.max` headroom.
+Separate stop and resume thresholds provide hysteresis after resource pressure.
+
+Queued work starts automatically when it reaches the head, all required child
+slots are free, and the configured resource gates are satisfied. `/stop`, session reset, and
+gateway shutdown cancel matching queued work before its runner starts. Queue
+expiry produces a terminal `timeout` completion. A full queue rejects new work;
+it never falls back to synchronous execution.
+
+The queue is process-local execution state, not a durable job runner. After a
+process restart, a queued-but-never-started entry is reported as `interrupted`
+("cancelled before start"), while a running one is reported with an `unknown`
+outcome. Use `cronjob` or a bounded background terminal process for work that
+must survive process restarts.
+
 ## Stall Detection for Background Subagents
 
 Background delegations (`delegate_task(background=true)`) are watched by a
@@ -480,7 +504,7 @@ The parent agent orchestrates its own running children with the same `delegate_t
 {"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
 ```
 
-- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Because queued children are constructed only after admission, the initial spawn response directs callers to `list` rather than timing-dependently returning ids.
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
 - **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
 
@@ -545,9 +569,9 @@ delegate_task(
 :::warning Background completion durability is not durable execution
 Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
 
-- Normal follow-up messages do not cancel background children. `/stop` cancels running background delegations, and closing or resetting the owning session discards its active children.
+- Normal follow-up messages do not cancel background children. `/stop` cancels queued and running background delegations, and closing or resetting the owning session discards queued work and active children.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
-- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened. A child that was still queued (never started) becomes `interrupted` — "cancelled before start".
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 

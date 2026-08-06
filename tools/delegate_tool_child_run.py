@@ -787,6 +787,7 @@ class _ChildRun:
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
+            setattr(child, "_delegate_lingering_future", future)
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
 

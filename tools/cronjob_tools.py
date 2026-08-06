@@ -513,7 +513,7 @@ def _try_dispatch_background_run(
         from tools.delegate_tool import _get_max_async_children
         max_async = _get_max_async_children()
     except Exception:
-        max_async = 3
+        max_async = 10
 
     started_at = time.time()
     # Scheduler's own normalizer (falsy -> "local", list -> comma string) on the claimed snapshot.
@@ -532,14 +532,16 @@ def _try_dispatch_background_run(
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         max_async_children=max_async)
-    if dispatch.get("status") == "dispatched":
-        return {"claimed": True, "dispatched": True, "delegation_id": dispatch.get("delegation_id")}
+    if dispatch.get("status") in {"dispatched", "queued"}:
+        return {"claimed": True, "dispatched": True, "status": dispatch["status"],
+                "delegation_id": dispatch.get("delegation_id"),
+                **({"queue_reason": dispatch.get("queue_reason", "capacity")} if dispatch["status"] == "queued" else {})}
 
     # Pool at capacity (or submit failure): the claim is already taken and must not be stranded.
     logger.info(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name)
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 

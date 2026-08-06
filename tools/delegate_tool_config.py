@@ -527,3 +527,93 @@ def _resolve_child_runtime(
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs
+
+
+def _get_max_queued_delegations() -> int:
+    """Maximum bounded backlog of background delegation units."""
+    value = _load_config().get("max_queued_delegations", 8)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_queued_delegations=%r is invalid; using default 8",
+            value,
+        )
+        return 8
+
+
+def _get_min_available_memory_bytes() -> int:
+    """Configured memory headroom required before queued work may start."""
+    value = _load_config().get("min_available_memory_mb", 0)
+    try:
+        return max(0, int(float(value) * 1024 * 1024))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.min_available_memory_mb=%r is invalid; disabling the floor",
+            value,
+        )
+        return 0
+
+
+def _get_resume_available_memory_bytes() -> int:
+    """Higher memory headroom required after admission has been blocked."""
+    cfg = _load_config()
+    minimum = cfg.get("min_available_memory_mb", 0)
+    value = cfg.get("resume_available_memory_mb", minimum)
+    try:
+        return max(
+            max(0, int(float(minimum) * 1024 * 1024)),
+            int(float(value) * 1024 * 1024),
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.resume_available_memory_mb=%r is invalid; using the stop floor",
+            value,
+        )
+        return _get_min_available_memory_bytes()
+
+
+def _get_max_memory_psi_avg10() -> float:
+    """PSI some/avg10 ceiling for starting new background work; 0 disables."""
+    value = _load_config().get("max_memory_psi_avg10", 0)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_memory_psi_avg10=%r is invalid; disabling PSI gating",
+            value,
+        )
+        return 0.0
+
+
+def _get_resume_memory_psi_avg10() -> float:
+    """Lower PSI ceiling required to resume after pressure blocked admission."""
+    cfg = _load_config()
+    maximum = cfg.get("max_memory_psi_avg10", 0)
+    value = cfg.get("resume_memory_psi_avg10", maximum)
+    try:
+        stop_ceiling = max(0.0, float(maximum))
+        resume_ceiling = float(value)
+        if resume_ceiling <= 0.0:
+            resume_ceiling = stop_ceiling
+        return max(0.0, min(stop_ceiling, resume_ceiling))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.resume_memory_psi_avg10=%r is invalid; using the stop ceiling",
+            value,
+        )
+        return _get_max_memory_psi_avg10()
+
+
+def _get_queue_timeout_seconds() -> float:
+    """Maximum time a background delegation may remain queued."""
+    value = _load_config().get("queue_timeout_seconds", 3600)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.queue_timeout_seconds=%r is invalid; using 3600",
+            value,
+        )
+        return 3600.0
+

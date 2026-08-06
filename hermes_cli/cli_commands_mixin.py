@@ -927,14 +927,17 @@ class CLICommandsMixin:
         # Background (async) delegations — delegate_task(background=true)
         delegations = _probe("tools.async_delegation", "list_async_delegations", [])
         if delegations:
-            running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
-            _cp(f"  Background delegations: {len(running_d)} running")
+            running_d = [d for d in delegations if d.get("status") in ("running", "stalling", "finalizing")]
+            queued_d = [d for d in delegations if d.get("status") == "queued"]
+            _cp(f"  Background delegations: {len(running_d)} running, {len(queued_d)} queued")
             for d in delegations:
                 status = d.get("status", "?")
                 line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
                 # Live-status detail for in-flight delegations.
                 # See #51690.
-                if status == "stalling":
+                if status == "queued":
+                    line += f" · {d.get('queue_reason', 'capacity')}"
+                elif status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")
                     if quiet is not None:
                         line += f" · no progress {quiet:.0f}s — interrupting"

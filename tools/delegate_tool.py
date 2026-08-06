@@ -12,6 +12,7 @@ tool calls or reasoning.
 """
 
 import logging
+import threading
 import time
 import weakref
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,7 @@ from tools.delegate_tool_config import (  # noqa: F401
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
+    _get_max_queued_delegations, _get_min_available_memory_bytes, _get_resume_available_memory_bytes, _get_max_memory_psi_avg10, _get_resume_memory_psi_avg10, _get_queue_timeout_seconds,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -55,6 +57,8 @@ from tools.delegate_tool_toolsets import (  # noqa: F401
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+
+_CHILD_BUILD_LOCK = threading.Lock()
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -362,7 +366,8 @@ def _run_single_child(
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    live_deleg_id: Optional[str], live_writers: list, task_indexes: Optional[List[int]] = None,
+    task_images: Optional[List[Optional[List[str]]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -378,6 +383,8 @@ def _build_children(
     }
     children = []
     for i, t in enumerate(task_list):
+        if task_indexes is not None and i not in task_indexes:
+            continue
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -493,15 +500,22 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
-    if err:
-        return tool_error(err)
+    # Reserve resource slots before constructing any child (including grouped units).
+    def build_children(indexes):
+        with _CHILD_BUILD_LOCK:
+            children, err = _build_children(
+                task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter,
+                parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=live_deleg_id,
+                live_writers=live_writers, task_indexes=indexes, task_images=task_images,
+            )
+        if err:
+            raise ValueError(err)
+        return children
+
     batch = _Batch(
-        task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        task_list, [(i, t, None) for i, t in enumerate(task_list)], parent_agent, creds,
+        context, top_role, max_children, live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        build_children=build_children,
     )
     return _run_batch(batch, background)
 

@@ -159,7 +159,9 @@ def _agents_delegation_lines(d: dict) -> list[str]:
     status = d.get("status", "?")
     row = f"- `{d.get('delegation_id', '?')}` · {status}"
     quiet = d.get("stalled_after_quiet_seconds")
-    if status == "stalling" and quiet is not None:
+    if status == "queued":
+        row += f" · {d.get('queue_reason', 'capacity')}"
+    elif status == "stalling" and quiet is not None:
         row += f" · no progress {quiet:.0f}s"
     elif status != "stalling" and d.get("seconds_since_progress", 0) >= 60:
         row += f" · quiet {d['seconds_since_progress']:.0f}s"
@@ -433,7 +435,7 @@ class GatewayStatusCommandsMixin:
         # tool, seconds since last activity.
         from tools.async_delegation import list_async_delegations
         delegations = [d for d in _quiet_sync(list_async_delegations, [])
-                       if d.get("status") in ("running", "stalling", "finalizing")]
+                       if d.get("status") in ("queued", "running", "stalling", "finalizing")]
 
         def _agent_row(idx_row):
             idx, row = idx_row

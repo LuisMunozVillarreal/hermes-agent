@@ -435,6 +435,20 @@ class GatewaySlashCommandsMixin(
             await _stop(session_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
+        # Detached work may remain after the foreground run has ended.
+        try:
+            from tools.async_delegation import interrupt_for_session
+            stopped = interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(session_entry, "session_id", "") or ""),
+                reason="stop_command_idle",
+            )
+        except Exception:
+            logger.debug("Failed to interrupt idle-session delegations", exc_info=True)
+            stopped = 0
+        if stopped:
+            return EphemeralReply(t("gateway.stop.stopped"))
+
         # No run under the caller's own key. In a per-user thread (thread_sessions_per_user=True) a
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
