@@ -1345,11 +1345,11 @@ class GatewayInboundMixin:
 
     @staticmethod
     def _classify_inbound_media(
-        event: MessageEvent, pending_stt_prepared: bool
+        event: MessageEvent, pending_stt_prepared: bool, transcribe_attachments: bool = False
     ) -> Tuple[list, list, list, list]:
         """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
         MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
+        as an image). AUDIO files enter STT only when opted in; DOCUMENT audio stays a file."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
         for i, path in enumerate(event.media_urls or []):
@@ -1357,9 +1357,11 @@ class GatewayInboundMixin:
             if _event_media_is_image(event, i):
                 image_paths.append(path)
             if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+                if event.message_type == MessageType.DOCUMENT or (
+                    event.message_type == MessageType.AUDIO and not transcribe_attachments
+                ):
                     audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
+                elif not pending_stt_prepared and _event_media_is_stt_input(event, i, transcribe_attachments):
                     audio_paths.append(path)
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
@@ -1624,7 +1626,10 @@ class GatewayInboundMixin:
         self._consume_pending_native_image_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
-        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(
+            event, _pending_stt_prepared,
+            transcribe_attachments=getattr(self.config, "stt_transcribe_audio_attachments", False),
+        )
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
@@ -2002,7 +2007,10 @@ class GatewayInboundMixin:
         from gateway.run import _event_media_is_stt_input
         return [
             path for i, path in enumerate(getattr(event, "media_urls", None) or [])
-            if _event_media_is_stt_input(event, i)
+            if _event_media_is_stt_input(
+                event, i,
+                transcribe_attachments=getattr(self.config, "stt_transcribe_audio_attachments", False),
+            )
         ]
 
     async def _transcribe_pending_audio_event_once(
