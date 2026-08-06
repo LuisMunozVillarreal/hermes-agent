@@ -3029,11 +3029,20 @@ def _event_media_is_audio(event, index: int) -> bool:
     return getattr(event, "message_type", None) in {MessageType.VOICE, MessageType.AUDIO}
 
 
-def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+def _event_media_is_stt_input(event, index: int, transcribe_attachments: bool = False) -> bool:
+    """True when an audio attachment should enter the automatic STT pipeline.
+
+    Native voice messages (MessageType.VOICE) and anything with an audio/*
+    MIME always qualify. Audio *file* attachments (MessageType.AUDIO — e.g.
+    .mp3/.m4a uploaded as files) are excluded by default and only qualify
+    when ``transcribe_attachments`` is True (config:
+    ``stt.transcribe_audio_attachments``). Documents never qualify.
+    """
     message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+    if message_type == MessageType.DOCUMENT:
         return False
+    if message_type == MessageType.AUDIO:
+        return transcribe_attachments
     return (
         message_type == MessageType.VOICE
         or _event_media_type_at(event, index).startswith("audio/")
@@ -18055,10 +18064,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # mis-routed here as an image and the provider 400s.
                 if _event_media_is_image(event, i):
                     image_paths.append(path)
-                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
+                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) —
+                #   STT only when stt.transcribe_audio_attachments is enabled,
+                #   otherwise handed to the agent as a raw file path.
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT
                 if event.message_type == MessageType.AUDIO:
-                    audio_file_paths.append(path)
+                    if getattr(self.config, "stt_transcribe_audio_attachments", False):
+                        if not _pending_stt_prepared:
+                            audio_paths.append(path)
+                    else:
+                        audio_file_paths.append(path)
                 elif not _pending_stt_prepared and _event_media_is_stt_input(event, i):
                     audio_paths.append(path)
                 if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
@@ -24679,7 +24694,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_paths: List[str] = []
         media_urls = getattr(event, "media_urls", None) or []
         for i, path in enumerate(media_urls):
-            if _event_media_is_stt_input(event, i):
+            if _event_media_is_stt_input(
+                event,
+                i,
+                transcribe_attachments=getattr(
+                    self.config, "stt_transcribe_audio_attachments", False
+                ),
+            ):
                 audio_paths.append(path)
         return audio_paths
 
