@@ -15,6 +15,9 @@ import json
 import time
 
 GEMINI_TTS_CONTEXT_MAX_CHARS = 32000
+GEMINI_TTS_MAX_ATTEMPTS = 10
+GEMINI_TTS_MAX_TIMEOUT_SECONDS = 300.0
+GEMINI_TTS_MAX_RETRY_DELAY_SECONDS = 60.0
 import requests
 from agent.retry_utils import parse_retry_after_seconds
 import logging
@@ -613,21 +616,27 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         max_attempts = int(gemini_config.get("max_attempts", 4))
     except (TypeError, ValueError, OverflowError):
         max_attempts = 4
-    max_attempts = max(1, max_attempts)
+    max_attempts = min(GEMINI_TTS_MAX_ATTEMPTS, max(1, max_attempts))
     try:
         timeout_seconds = float(gemini_config.get("timeout", 60))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         timeout_seconds = 60.0
     if not math.isfinite(timeout_seconds):
         timeout_seconds = 60.0
-    timeout_seconds = max(1.0, timeout_seconds)
+    timeout_seconds = min(
+        GEMINI_TTS_MAX_TIMEOUT_SECONDS,
+        max(1.0, timeout_seconds),
+    )
     try:
         retry_delay = float(gemini_config.get("retry_delay_seconds", 1.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         retry_delay = 1.0
     if not math.isfinite(retry_delay):
         retry_delay = 1.0
-    retry_delay = max(0.0, retry_delay)
+    retry_delay = min(
+        GEMINI_TTS_MAX_RETRY_DELAY_SECONDS,
+        max(0.0, retry_delay),
+    )
     retryable_statuses = {408, 429, 500, 502, 503, 504}
 
     data: Optional[Dict[str, Any]] = None

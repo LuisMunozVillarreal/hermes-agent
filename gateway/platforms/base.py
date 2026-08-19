@@ -3776,12 +3776,19 @@ class BasePlatformAdapter(ABC):
                 if not tts_data.get("success", False):
                     raise RuntimeError(tts_data.get("error") or "TTS tool returned success=false")
                 raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-                paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
+                declared_paths = [str(path) for path in raw_tts_paths if path]
+                if (len(declared_paths) != len(raw_tts_paths) or not declared_paths
+                        or any(not Path(path).exists() for path in declared_paths)):
+                    for path in declared_paths:
+                        with contextlib.suppress(OSError):
+                            os.remove(path)
+                    raise RuntimeError("TTS generation reported success without a complete set of usable audio output files")
+                paths = declared_paths
             else:
                 raise RuntimeError("TTS provider requirements are unavailable")
         except Exception as tts_err:
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-            error_notice = "Audio was not sent because TTS failed with the configured provider."
+            error_notice = "Audio could not be fully delivered because TTS failed with the configured provider."
         return paths, requested_path, error_notice
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
@@ -4147,7 +4154,9 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path, _tts_error_notice = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
-                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
+                _tts_cleanup_paths.update(
+                    {_tts_requested_path, *_tts_paths} - {None}
+                )
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
@@ -4157,7 +4166,7 @@ class BasePlatformAdapter(ABC):
                         # Keep backend details out of the visible fallback.
                         logger.warning("[%s] Auto-TTS delivery failed (%s)",
                                        self.name, type(tts_delivery_error).__name__)
-                        _tts_error_notice = "Audio was not sent because TTS failed with the configured provider."
+                        _tts_error_notice = "Audio could not be fully delivered because TTS failed with the configured provider."
                         break
                     finally:
                         with contextlib.suppress(OSError):

@@ -1023,9 +1023,9 @@ DEFAULT_CONFIG = {
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",
-            "max_attempts": 4,
-            "timeout": 60,
-            "retry_delay_seconds": 1.0,
+            "max_attempts": 4,  # Clamped to 1-10.
+            "timeout": 60,  # Connect/read-inactivity seconds; clamped to 1-300.
+            "retry_delay_seconds": 1.0,  # Clamped to 0-60 seconds.
             # Gemini 3.1: aux-model rewrite inserts [audio tags] into the TTS script only.
             "audio_tags": False,
             # Optional local text file with performance direction; may include a `{transcript}`
