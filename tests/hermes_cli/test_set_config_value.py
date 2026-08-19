@@ -172,6 +172,22 @@ class TestConfigYamlRouting:
         config = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("tts.gemini.max_attempts", "4"),
+            ("tts.gemini.timeout", "60"),
+            ("tts.gemini.retry_delay_seconds", "1.0"),
+        ],
+    )
+    def test_gemini_retry_settings_are_recognized(
+        self, key, value, _isolated_hermes_home, capsys
+    ):
+        set_config_value(key, value)
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert key.rsplit(".", 1)[-1] in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
