@@ -72,7 +72,7 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
-    max_attempts: 3             # Retry transient request/read failures
+    max_attempts: 4             # Retry transient request/read/HTTP failures
     timeout: 60                 # Per-attempt timeout in seconds
     retry_delay_seconds: 1.0    # Delay between attempts
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
@@ -161,7 +161,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | xAI | 15000 |
 | MiniMax | 10000 |
 | Mistral | 4000 |
-| Google Gemini | 32000 |
+| Google Gemini | 2000 (practical sync-generation cap; 32k-token context) |
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
