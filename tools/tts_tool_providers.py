@@ -13,6 +13,8 @@ import base64
 import contextlib
 import json
 import time
+
+GEMINI_TTS_CONTEXT_MAX_CHARS = 32000
 import requests
 import logging
 import os
@@ -580,13 +582,17 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
     prompt_text = _compose_gemini_tts_prompt(
         tts_script, gemini_config, persona_prompt=persona_prompt)
-    max_len = origin._resolve_max_text_length("gemini", tts_config)
-    if len(prompt_text) > max_len:
+    # ``tts.gemini.max_text_length`` is the practical spoken-transcript chunk
+    # size used by the public wrapper. Persona/performance direction does not
+    # produce audio duration, so validate the composed request against the
+    # model context separately rather than consuming the transcript budget.
+    if len(prompt_text) > GEMINI_TTS_CONTEXT_MAX_CHARS:
         raise ValueError(
-            "Gemini TTS composed prompt exceeds the provider request limit "
-            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
-            "prompt or lower tts.gemini.max_text_length so long-form text is "
-            "split with enough prompt headroom.")
+            "Gemini TTS composed prompt exceeds the conservative context limit "
+            f"({len(prompt_text)} > {GEMINI_TTS_CONTEXT_MAX_CHARS} chars). "
+            "Reduce the persona or audio-tag prompt."
+        )
+
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -604,9 +610,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
     endpoint = f"{base_url}/models/{model}:generateContent"
     try:
-        max_attempts = int(gemini_config.get("max_attempts", 3))
+        max_attempts = int(gemini_config.get("max_attempts", 4))
     except (TypeError, ValueError):
-        max_attempts = 3
+        max_attempts = 4
     max_attempts = max(1, max_attempts)
     try:
         timeout_seconds = float(gemini_config.get("timeout", 60))
