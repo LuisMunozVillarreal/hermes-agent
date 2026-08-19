@@ -3805,7 +3805,9 @@ class BasePlatformAdapter(ABC):
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
+        if not getattr(tts_result, "success", False):
+            raise RuntimeError("Auto-TTS delivery returned success=false")
+        return bool(caption)
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
@@ -4145,17 +4147,25 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path, _tts_error_notice = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
+                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
                             event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
                             _record_delivery)
+                    except Exception as tts_delivery_error:
+                        # Keep backend details out of the visible fallback.
+                        logger.warning("[%s] Auto-TTS delivery failed (%s)",
+                                       self.name, type(tts_delivery_error).__name__)
+                        _tts_error_notice = "Audio was not sent because TTS failed with the configured provider."
+                        break
                     finally:
                         with contextlib.suppress(OSError):
                             os.remove(_tts_path)
-                if not _tts_paths and _tts_requested_path is not None:
+                        _tts_cleanup_paths.discard(_tts_path)
+                for _cleanup_path in _tts_cleanup_paths:
                     with contextlib.suppress(OSError):
-                        os.remove(_tts_requested_path)
+                        os.remove(_cleanup_path)
                 if _tts_error_notice and text_content and not _tts_caption_delivered:
                     text_content = f"{_tts_error_notice}\n\n{text_content}"
                 if text_content and not _tts_caption_delivered:
