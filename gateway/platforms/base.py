@@ -6545,24 +6545,44 @@ class BasePlatformAdapter(ABC):
                             metadata=_final_thread_metadata,
                         )
                         _record_delivery(tts_result)
-                        _tts_caption_delivered = bool(
-                            _tts_caption_delivered
-                            or (
-                                telegram_tts_caption
-                                and getattr(tts_result, "success", False)
+                        if not getattr(tts_result, "success", False):
+                            logger.warning(
+                                "[%s] Auto-TTS delivery returned success=false",
+                                self.name,
                             )
+                            _tts_error_notice = (
+                                "Audio was not sent because TTS failed with the "
+                                "configured provider."
+                            )
+                            break
+                        _tts_caption_delivered = bool(
+                            _tts_caption_delivered or telegram_tts_caption
                         )
+                    except Exception as tts_delivery_error:
+                        # Platform exceptions can include sensitive backend
+                        # details. Keep the original text reply deliverable and
+                        # log only the failure class.
+                        logger.warning(
+                            "[%s] Auto-TTS delivery failed (%s)",
+                            self.name,
+                            type(tts_delivery_error).__name__,
+                        )
+                        _tts_error_notice = (
+                            "Audio was not sent because TTS failed with the "
+                            "configured provider."
+                        )
+                        break
                     finally:
                         try:
                             os.remove(_tts_path)
                         except OSError:
                             pass
-                if not _tts_paths and _tts_cleanup_paths:
-                    for _cleanup_path in _tts_cleanup_paths:
-                        try:
-                            os.remove(_cleanup_path)
-                        except OSError:
-                            pass
+                        _tts_cleanup_paths.discard(_tts_path)
+                for _cleanup_path in _tts_cleanup_paths:
+                    try:
+                        os.remove(_cleanup_path)
+                    except OSError:
+                        pass
 
                 # Send the text portion. A reconnect may have replaced this
                 # adapter while its in-flight handler was still producing a
