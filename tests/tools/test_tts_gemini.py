@@ -244,6 +244,55 @@ class TestGenerateGeminiTts:
         assert mock_post.call_count == 2
         mock_sleep.assert_not_called()
 
+    def test_honors_bounded_http_date_retry_after(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        from tools.tts_tool import _generate_gemini_tts
+
+        unavailable = MagicMock()
+        unavailable.status_code = 503
+        unavailable.headers = {
+            "Retry-After": format_datetime(
+                datetime.now(timezone.utc) + timedelta(minutes=2),
+                usegmt=True,
+            )
+        }
+        unavailable.json.return_value = {"error": {"message": "try later"}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch(
+            "requests.post",
+            side_effect=[unavailable, mock_gemini_response],
+        ), patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        mock_sleep.assert_called_once_with(60.0)
+
+    def test_malformed_retry_after_uses_configured_delay(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        unavailable = MagicMock()
+        unavailable.status_code = 503
+        unavailable.headers = {"Retry-After": "not-a-delay"}
+        unavailable.json.return_value = {"error": {"message": "try later"}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch(
+            "requests.post",
+            side_effect=[unavailable, mock_gemini_response],
+        ), patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts(
+                "Hi",
+                str(tmp_path / "test.wav"),
+                {"gemini": {"retry_delay_seconds": 0.25}},
+            )
+
+        mock_sleep.assert_called_once_with(0.25)
+
     def test_default_budget_recovers_from_timeouts_then_transient_http(
         self, tmp_path, monkeypatch, mock_gemini_response
     ):
