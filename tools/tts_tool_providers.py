@@ -16,6 +16,7 @@ import time
 
 GEMINI_TTS_CONTEXT_MAX_CHARS = 32000
 import requests
+from agent.retry_utils import parse_retry_after_seconds
 import logging
 import os
 import re
@@ -650,14 +651,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                     and attempt < max_attempts
                 ):
                     delay = retry_delay
-                    retry_after = getattr(response, "headers", {}).get("Retry-After")
+                    retry_after = parse_retry_after_seconds(
+                        getattr(response, "headers", {})
+                    )
                     if retry_after is not None:
-                        try:
-                            # Support the common delta-seconds form and bound
-                            # an upstream-controlled delay to one minute.
-                            delay = min(60.0, max(0.0, float(retry_after)))
-                        except (TypeError, ValueError):
-                            pass
+                        # Bound an upstream-controlled delay to one minute.
+                        delay = min(60.0, retry_after)
                     logger.warning(
                         "Gemini TTS request attempt %d/%d returned retryable HTTP %d",
                         attempt,
