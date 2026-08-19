@@ -323,6 +323,39 @@ class TestGenerateGeminiTts:
         assert mock_post.call_count == 4
         assert (tmp_path / "test.wav").exists()
 
+    def test_nonfinite_retry_config_uses_safe_defaults(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output = tmp_path / "test.wav"
+        unavailable = MagicMock()
+        unavailable.status_code = 503
+        unavailable.headers = {}
+        unavailable.json.return_value = {"error": {"message": "try later"}}
+
+        with patch(
+            "requests.post",
+            side_effect=[unavailable, mock_gemini_response],
+        ) as mock_post, patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts(
+                "Hi",
+                str(output),
+                {
+                    "gemini": {
+                        "max_attempts": float("inf"),
+                        "timeout": float("nan"),
+                        "retry_delay_seconds": float("inf"),
+                    }
+                },
+            )
+
+        assert mock_post.call_count == 2
+        assert all(call.kwargs["timeout"] == 60.0 for call in mock_post.call_args_list)
+        mock_sleep.assert_called_once_with(1.0)
+        assert output.exists()
+
     def test_persona_prompt_does_not_consume_transcript_chunk_budget(
         self, tmp_path, monkeypatch, mock_gemini_response
     ):

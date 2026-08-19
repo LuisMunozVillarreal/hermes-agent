@@ -40,6 +40,7 @@ import datetime
 import importlib.util
 import json
 import logging
+import math
 import os
 import queue
 import platform
@@ -2694,17 +2695,21 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     endpoint = f"{base_url}/models/{model}:generateContent"
     try:
         max_attempts = int(gemini_config.get("max_attempts", 4))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         max_attempts = 4
     max_attempts = max(1, max_attempts)
     try:
         timeout_seconds = float(gemini_config.get("timeout", 60))
     except (TypeError, ValueError):
         timeout_seconds = 60.0
+    if not math.isfinite(timeout_seconds):
+        timeout_seconds = 60.0
     timeout_seconds = max(1.0, timeout_seconds)
     try:
         retry_delay = float(gemini_config.get("retry_delay_seconds", 1.0))
     except (TypeError, ValueError):
+        retry_delay = 1.0
+    if not math.isfinite(retry_delay):
         retry_delay = 1.0
     retry_delay = max(0.0, retry_delay)
     retryable_statuses = {408, 429, 500, 502, 503, 504}
