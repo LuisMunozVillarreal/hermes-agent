@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +32,14 @@ def _synthesize(text: str, output_path: str) -> list[str]:
     if not tts_data.get("success", False):
         raise RuntimeError("TTS tool returned success=false")
     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-    return [str(path) for path in raw_tts_paths if path and Path(path).exists()]
+    declared_paths = [str(path) for path in raw_tts_paths if path]
+    if (len(declared_paths) != len(raw_tts_paths) or not declared_paths
+            or any(not Path(path).exists() for path in declared_paths)):
+        for path in declared_paths:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+        raise RuntimeError("TTS generation reported success without a complete set of usable audio output files")
+    return declared_paths
 
 
 async def synthesize_auto_tts(adapter, text_content: str, source, output_path_for) -> tuple[list[str], Optional[str], Optional[str]]:
@@ -53,5 +61,5 @@ async def synthesize_auto_tts(adapter, text_content: str, source, output_path_fo
                 raise RuntimeError("TTS provider requirements are unavailable")
     except Exception as tts_err:  # an auto voice reply never fails the text reply it accompanies
         logger.warning("[%s] Auto-TTS failed: %s", adapter.name, tts_err, exc_info=True)
-        error_notice = "Audio was not sent because TTS failed with the configured provider."
+        error_notice = "Audio could not be fully delivered because TTS failed with the configured provider."
     return paths, requested_path, error_notice

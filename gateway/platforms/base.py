@@ -4417,7 +4417,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         # Keep backend details out of the visible fallback.
                         logger.warning("[%s] Auto-TTS delivery failed (%s)",
                                        self.name, type(tts_delivery_error).__name__)
-                        _tts_error_notice = "Audio was not sent because TTS failed with the configured provider."
+                        _tts_error_notice = "Audio could not be fully delivered because TTS failed with the configured provider."
                         break
                     finally:
                         with contextlib.suppress(OSError):
