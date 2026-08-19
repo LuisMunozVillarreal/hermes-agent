@@ -244,6 +244,55 @@ class TestGenerateGeminiTts:
         assert mock_post.call_count == 2
         mock_sleep.assert_not_called()
 
+    def test_default_budget_recovers_from_timeouts_then_transient_http(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        """Regression for the Aug 19 production sequence: timeout, timeout, 500."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        transient = MagicMock()
+        transient.status_code = 500
+        transient.headers = {}
+        transient.json.return_value = {"error": {"message": "internal error"}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch(
+            "requests.post",
+            side_effect=[
+                requests.exceptions.ReadTimeout("slow-1"),
+                requests.exceptions.ReadTimeout("slow-2"),
+                transient,
+                mock_gemini_response,
+            ],
+        ) as mock_post, patch("time.sleep"):
+            _generate_gemini_tts(
+                "Hi",
+                str(tmp_path / "test.wav"),
+                {"gemini": {"retry_delay_seconds": 0}},
+            )
+
+        assert mock_post.call_count == 4
+        assert (tmp_path / "test.wav").exists()
+
+    def test_persona_prompt_does_not_consume_transcript_chunk_budget(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        """The practical 2k cap limits spoken text, not non-spoken direction."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        with patch(
+            "tools.tts_tool._read_gemini_persona_prompt",
+            return_value="P" * 1000,
+        ), patch("requests.post", return_value=mock_gemini_response):
+            _generate_gemini_tts(
+                "T" * 2000,
+                str(tmp_path / "test.wav"),
+                {"gemini": {}},
+            )
+
+        assert (tmp_path / "test.wav").exists()
+
     def test_does_not_retry_deterministic_http_error(self, tmp_path, monkeypatch):
         from tools.tts_tool import _generate_gemini_tts
 
