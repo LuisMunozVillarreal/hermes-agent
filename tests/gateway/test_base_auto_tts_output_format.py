@@ -143,7 +143,8 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     # silently dropping the requested audio. Internal provider details stay in
     # logs instead of being exposed in the chat response.
     assert adapter.sent and adapter.sent[0]["content"] == (
-        "Audio was not sent because TTS failed with the configured provider."
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
         "\n\nreply text"
     )
     assert "backend exploded" not in adapter.sent[0]["content"]
@@ -168,9 +169,77 @@ async def test_base_auto_tts_reports_unavailable_requirements():
     mock_tts.assert_not_called()
     adapter.play_tts.assert_not_awaited()
     assert adapter.sent and adapter.sent[0]["content"] == (
-        "Audio was not sent because TTS failed with the configured provider."
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
         "\n\nreply text"
     )
+
+
+@pytest.mark.asyncio
+async def test_base_auto_tts_reports_missing_generated_audio_path(tmp_path):
+    adapter = _DummyAdapter(Platform.DISCORD)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda chat_id: True
+    adapter.play_tts = AsyncMock(
+        return_value=SendResult(success=True, message_id="tts-1")
+    )
+    adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="reply text"))
+    event = _make_voice_event(Platform.DISCORD)
+    missing_path = tmp_path / "missing.mp3"
+
+    def fake_tts(*, text, output_path=None):
+        return json.dumps({"success": True, "file_path": str(missing_path)})
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    ):
+        await adapter._process_message_background(
+            event, build_session_key(event.source)
+        )
+
+    adapter.play_tts.assert_not_awaited()
+    assert adapter.sent and adapter.sent[0]["content"] == (
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
+        "\n\nreply text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_auto_tts_reports_partial_generated_audio_paths(tmp_path):
+    adapter = _DummyAdapter(Platform.DISCORD)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda chat_id: True
+    adapter.play_tts = AsyncMock(
+        return_value=SendResult(success=True, message_id="tts-1")
+    )
+    adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="reply text"))
+    event = _make_voice_event(Platform.DISCORD)
+    existing_path = tmp_path / "part-1.mp3"
+    missing_path = tmp_path / "part-2.mp3"
+
+    def fake_tts(*, text, output_path=None):
+        existing_path.write_bytes(b"fake audio")
+        return json.dumps({
+            "success": True,
+            "file_paths": [str(existing_path), str(missing_path)],
+        })
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    ):
+        await adapter._process_message_background(
+            event, build_session_key(event.source)
+        )
+
+    adapter.play_tts.assert_not_awaited()
+    assert adapter.sent and adapter.sent[0]["content"] == (
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
+        "\n\nreply text"
+    )
+    assert not existing_path.exists()
+    assert not missing_path.exists()
 
 
 @pytest.mark.asyncio
@@ -203,7 +272,8 @@ async def test_base_auto_tts_recovers_from_playback_exception_and_cleans_all_fil
 
     adapter.play_tts.assert_awaited_once()
     assert adapter.sent and adapter.sent[0]["content"] == (
-        "Audio was not sent because TTS failed with the configured provider."
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
         "\n\nreply text"
     )
     assert "internal-platform-detail" not in adapter.sent[0]["content"]
@@ -238,7 +308,8 @@ async def test_base_auto_tts_reports_unsuccessful_playback(tmp_path):
 
     adapter.play_tts.assert_awaited_once()
     assert adapter.sent and adapter.sent[0]["content"] == (
-        "Audio was not sent because TTS failed with the configured provider."
+        "Audio could not be fully delivered because TTS failed with the "
+        "configured provider."
         "\n\nreply text"
     )
     assert "internal-platform-detail" not in adapter.sent[0]["content"]

@@ -6466,6 +6466,7 @@ class BasePlatformAdapter(ABC):
                 _tts_paths: List[str] = []
                 _tts_requested_path = None
                 _tts_error_notice = None
+                _tts_cleanup_paths = set()
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -6504,23 +6505,37 @@ class BasePlatformAdapter(ABC):
                             raw_tts_paths = tts_data.get("file_paths") or [
                                 tts_data.get("file_path")
                             ]
-                            _tts_paths = [
-                                str(path) for path in raw_tts_paths
-                                if path and Path(path).exists()
+                            declared_tts_paths = [
+                                str(path) for path in raw_tts_paths if path
                             ]
-                            _tts_path = _tts_paths[0] if _tts_paths else None
+                            _tts_cleanup_paths.update(declared_tts_paths)
+                            if (
+                                len(declared_tts_paths) != len(raw_tts_paths)
+                                or not declared_tts_paths
+                                or any(
+                                    not Path(path).exists()
+                                    for path in declared_tts_paths
+                                )
+                            ):
+                                raise RuntimeError(
+                                    "TTS generation reported success without a complete "
+                                    "set of usable audio output files"
+                                )
+                            _tts_paths = declared_tts_paths
                         else:
                             raise RuntimeError("TTS provider requirements are unavailable")
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
                         _tts_error_notice = (
-                            "Audio was not sent because TTS failed with the "
+                            "Audio could not be fully delivered because TTS failed with the "
                             "configured provider."
                         )
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
-                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
+                _tts_cleanup_paths.update(
+                    {_tts_requested_path, *_tts_paths} - {None}
+                )
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         # Caption eligibility and payload stay on the ORIGINAL
@@ -6551,7 +6566,7 @@ class BasePlatformAdapter(ABC):
                                 self.name,
                             )
                             _tts_error_notice = (
-                                "Audio was not sent because TTS failed with the "
+                                "Audio could not be fully delivered because TTS failed with the "
                                 "configured provider."
                             )
                             break
@@ -6568,7 +6583,7 @@ class BasePlatformAdapter(ABC):
                             type(tts_delivery_error).__name__,
                         )
                         _tts_error_notice = (
-                            "Audio was not sent because TTS failed with the "
+                            "Audio could not be fully delivered because TTS failed with the "
                             "configured provider."
                         )
                         break

@@ -1653,9 +1653,9 @@ DEFAULT_CONFIG = {
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",
-            "max_attempts": 4,
-            "timeout": 60,
-            "retry_delay_seconds": 1.0,
+            "max_attempts": 4,  # Clamped to 1-10.
+            "timeout": 60,  # Connect/read-inactivity seconds; clamped to 1-300.
+            "retry_delay_seconds": 1.0,  # Clamped to 0-60 seconds.
             # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
             # pass to insert freeform square-bracket audio tags into the TTS
             # script. Visible chat replies are unchanged.
