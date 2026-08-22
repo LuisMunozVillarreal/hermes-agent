@@ -13,12 +13,17 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
+from tools.systemd_scope import (
+    _is_supervised_gateway_process, _prepare_systemd_scope_argv,
+    _stop_systemd_unit, _systemd_run_user_scope_available, systemd_user_bus_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
@@ -803,12 +808,20 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        scope_unit = ""
+        run_env = _make_run_env(self.env)
+        if platform.system() == "Linux" and _is_supervised_gateway_process() and _systemd_run_user_scope_available():
+            args, scope_unit = _prepare_systemd_scope_argv(args, unit_suffix=f"foreground-{uuid.uuid4().hex[:12]}")
+            if scope_unit:
+                run_env = systemd_user_bus_env(run_env)
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        if scope_unit:
+            proc._hermes_systemd_unit = scope_unit
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -819,6 +832,11 @@ class LocalEnvironment(BaseEnvironment):
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
         try:
+            scope_unit = getattr(proc, "_hermes_systemd_unit", "")
+            if not _IS_WINDOWS and scope_unit and _stop_systemd_unit(scope_unit):
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    proc.wait(timeout=2.0)
+                return
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
