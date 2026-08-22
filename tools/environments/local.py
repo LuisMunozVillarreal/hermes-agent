@@ -12,11 +12,18 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.systemd_scope import (
+    _is_supervised_gateway_process,
+    _prepare_systemd_scope_argv,
+    _stop_systemd_unit,
+    _systemd_run_user_scope_available,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -2144,6 +2151,17 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        scope_unit = ""
+        if (
+            not _IS_WINDOWS
+            and _is_supervised_gateway_process()
+            and _systemd_run_user_scope_available()
+        ):
+            unit_suffix = f"foreground-{uuid.uuid4().hex[:12]}"
+            args, scope_unit = _prepare_systemd_scope_argv(
+                args, unit_suffix=unit_suffix
+            )
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -2157,6 +2175,9 @@ class LocalEnvironment(BaseEnvironment):
             cwd=_popen_cwd,
             **_popen_kwargs,
         )
+        if scope_unit:
+            proc._hermes_systemd_unit = scope_unit
+
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -2214,6 +2235,14 @@ class LocalEnvironment(BaseEnvironment):
                     pass
             else:
                 try:
+                    scope_unit = getattr(proc, "_hermes_systemd_unit", "")
+                    if scope_unit and _stop_systemd_unit(scope_unit):
+                        try:
+                            proc.wait(timeout=2.0)
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+                        return
+
                     pgid = os.getpgid(proc.pid)
                 except ProcessLookupError:
                     pgid = getattr(proc, "_hermes_pgid", None)
