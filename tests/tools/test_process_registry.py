@@ -33,12 +33,12 @@ def _reset_systemd_scope_cache():
     ``INVOCATION_ID`` is set) doesn't leak into tests that mock
     ``subprocess.Popen``. Tests that exercise the probe directly reset the
     cache themselves."""
-    import tools.process_registry as _pr
+    import tools.systemd_scope as _scope
 
-    original = _pr._SYSTEMD_SCOPE_AVAILABLE
-    _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    original = _scope._SYSTEMD_SCOPE_AVAILABLE
+    _scope._SYSTEMD_SCOPE_AVAILABLE = False
     yield
-    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+    _scope._SYSTEMD_SCOPE_AVAILABLE = original
 
 
 def _make_session(
@@ -1835,6 +1835,30 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    def test_cached_probe_with_missing_binary_does_not_record_false_scope(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("sleep 300", cwd="/tmp")
+
+        assert captured["argv"] == [
+            "/bin/bash", "-lic", "set +m; sleep 300",
+        ]
+        assert session.systemd_unit == ""
+
     def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
         """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
         systemd-run is available — isolation is a gateway concern."""
@@ -2109,13 +2133,13 @@ class TestSystemdCgroupIsolation:
         pipe_spawn.assert_not_called()
 
     def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with patch("tools.process_registry.logger.warning") as warning:
-            argv = pr._build_systemd_scope_argv(
+        with patch("tools.systemd_scope.logger.warning") as warning:
+            argv = scope._build_systemd_scope_argv(
                 ["/bin/bash", "-lc", "true"],
                 unit_suffix="test",
             )
@@ -2126,21 +2150,24 @@ class TestSystemdCgroupIsolation:
     def test_worker_memory_limit_caps_oversized_local_guard_override(
         self, monkeypatch
     ):
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
         monkeypatch.setattr(
-            pr.Path,
+            scope.Path,
             "read_text",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
         )
         monkeypatch.setattr(
-            pr.os,
+            scope.os,
             "sysconf",
             lambda *_args: (_ for _ in ()).throw(OSError("no sysconf")),
         )
 
-        assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
+        assert (
+            scope._worker_memory_max_bytes()
+            == scope._DEFAULT_WORKER_MEMORY_MAX_BYTES
+        )
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
@@ -2177,10 +2204,10 @@ class TestSystemdCgroupIsolation:
     ):
         """The availability check probes once and caches — a second call must
         not re-probe (and must return the same value)."""
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
         # Reset the cache.
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(scope, "_SYSTEMD_SCOPE_AVAILABLE", None)
         probe_calls = []
 
         def fake_run(*args, **kwargs):
@@ -2190,8 +2217,8 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
         monkeypatch.setattr("subprocess.run", fake_run)
 
-        first = pr._systemd_run_user_scope_available()
-        second = pr._systemd_run_user_scope_available()
+        first = scope._systemd_run_user_scope_available()
+        second = scope._systemd_run_user_scope_available()
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
@@ -2202,9 +2229,9 @@ class TestSystemdCgroupIsolation:
         A temporary cached ``False`` would let a racing worker spawn inside the
         gateway cgroup, defeating the OOM isolation guarantee.
         """
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(scope, "_SYSTEMD_SCOPE_AVAILABLE", None)
         probe_started = threading.Event()
         release_probe = threading.Event()
         probe_calls = []
@@ -2220,10 +2247,10 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr("subprocess.run", fake_run)
 
         first = threading.Thread(
-            target=lambda: results.append(pr._systemd_run_user_scope_available())
+            target=lambda: results.append(scope._systemd_run_user_scope_available())
         )
         second = threading.Thread(
-            target=lambda: results.append(pr._systemd_run_user_scope_available())
+            target=lambda: results.append(scope._systemd_run_user_scope_available())
         )
         first.start()
         assert probe_started.wait(timeout=2)
@@ -2244,10 +2271,10 @@ class TestSystemdCgroupIsolation:
         assert len(probe_calls) == 1
 
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        monkeypatch.setattr(scope, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(scope, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
         clock = [100.0]
         probe_results = [1, 0]
         probe_calls = []
@@ -2259,19 +2286,19 @@ class TestSystemdCgroupIsolation:
             )
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("tools.systemd_scope.time.monotonic", lambda: clock[0])
         monkeypatch.setattr("subprocess.run", fake_run)
 
-        assert pr._systemd_run_user_scope_available() is False
-        assert pr._systemd_run_user_scope_available() is False
+        assert scope._systemd_run_user_scope_available() is False
+        assert scope._systemd_run_user_scope_available() is False
         assert len(probe_calls) == 1
 
         clock[0] += 61
-        assert pr._systemd_run_user_scope_available() is True
+        assert scope._systemd_run_user_scope_available() is True
         assert len(probe_calls) == 2
 
     def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
-        import tools.process_registry as pr
+        import tools.systemd_scope as scope
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
         monkeypatch.setattr(
@@ -2283,7 +2310,50 @@ class TestSystemdCgroupIsolation:
             ),
         )
 
-        assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+        assert scope._stop_systemd_unit("hermes-worker-gone.scope") is True
+
+    def test_stop_timeout_force_kills_scope_and_verifies_inactive(self, monkeypatch):
+        import tools.systemd_scope as scope
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(list(argv))
+            if argv[2] == "stop":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            if argv[2] == "kill":
+                return subprocess.CompletedProcess(argv, 0)
+            assert argv[2] == "is-active"
+            return subprocess.CompletedProcess(argv, 3, stdout=b"inactive\n")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert scope._stop_systemd_unit("hermes-worker-stuck.scope") is True
+        assert [call[2] for call in calls] == ["stop", "kill", "is-active"]
+        assert "--kill-whom=all" in calls[1]
+        assert "--signal=SIGKILL" in calls[1]
+
+    def test_stop_timeout_does_not_accept_generic_is_active_error(self, monkeypatch):
+        import tools.systemd_scope as scope
+
+        def fake_run(argv, **kwargs):
+            if argv[2] == "stop":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            if argv[2] == "kill":
+                return subprocess.CompletedProcess(argv, 0)
+            assert argv[2] == "is-active"
+            return subprocess.CompletedProcess(
+                argv,
+                1,
+                stdout=b"",
+                stderr=b"Failed to connect to bus\n",
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert scope._stop_systemd_unit("hermes-worker-unverified.scope") is False
 
 
 class TestNotificationRedaction:
