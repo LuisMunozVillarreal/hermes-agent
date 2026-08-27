@@ -449,6 +449,52 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_native_auto_thread_title_rename_uses_native_adapter_contract(adapter):
+    """Relay-only kwargs must not leak into the native Discord adapter call."""
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    thread = SimpleNamespace(id=999, name="Hermes", edit=AsyncMock())
+    adapter._client.get_channel = lambda _id: thread
+
+    class _Runner:
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _is_relay_discord_channel_lane = GatewayRunner._is_relay_discord_channel_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self):
+            self.adapters = {Platform.DISCORD: adapter}
+
+        def _adapter_for_source(self, _source):
+            return adapter
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        thread_id="999",
+        delivered_via_upstream_relay=False,
+        auto_thread_created=True,
+        auto_thread_initial_name="Hermes",
+    )
+
+    await _Runner()._rename_discord_auto_thread_for_session_title(
+        source,
+        "session-1",
+        "Semantic Session Title",
+    )
+
+    thread.edit.assert_awaited_once_with(
+        name="Semantic Session Title",
+        reason="Hermes semantic session title",
+    )
+
+
 # ------------------------------------------------------------------
 # Auto-thread integration in _handle_message
 # ------------------------------------------------------------------
