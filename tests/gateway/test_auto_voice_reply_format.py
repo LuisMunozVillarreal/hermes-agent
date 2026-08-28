@@ -73,6 +73,20 @@ class TestAutoVoiceReplyFormat:
             voice_event, "hello", [], already_sent=True
         ) is True
 
+    def test_should_send_voice_reply_global_auto_tts_requires_voice_input(self):
+        """Global voice.auto_tts must not widen audio replies to text input."""
+        runner = _make_runner()
+        adapter = _make_adapter(Platform.DISCORD)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.DISCORD] = adapter
+        text_event = _make_event(
+            Platform.DISCORD, chat_id="123", message_type=MessageType.TEXT
+        )
+
+        assert runner._should_send_voice_reply(
+            text_event, "hello", [], already_sent=True
+        ) is False
+
     def test_should_send_voice_reply_voice_only_still_requires_voice_input(self):
         """Explicit voice_only must not widen to text input (#73508 regression).
 
