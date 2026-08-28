@@ -295,7 +295,7 @@ class GatewayVoiceMixin:
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
-                or (voice_mode is None and adapter_auto_tts)):
+                or (voice_mode is None and adapter_auto_tts and is_voice_input)):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
