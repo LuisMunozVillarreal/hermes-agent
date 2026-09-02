@@ -23599,10 +23599,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
             # ``voice.auto_tts`` is synced into the adapter on gateway startup.
-            # It is the fallback only when the chat has no explicit mode and
-            # the trigger is voice input; otherwise global auto-TTS would widen
-            # audio replies to ordinary text messages.
-            or (voice_mode is None and adapter_auto_tts and is_voice_input)
+            # It is the fallback only when the chat has no explicit mode;
+            # otherwise the chat-level all/voice_only/off choice takes precedence.
+            or (voice_mode is None and adapter_auto_tts)
         )
         if not should:
             logger.debug(
