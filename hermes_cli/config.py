@@ -1103,13 +1103,19 @@ _FB_SINGLE_REQUIRED_FIELDS = (
 
 def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     voice_cfg = config.get("voice")
-    if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
+    if not isinstance(voice_cfg, dict):
         return
-    submit_mode = voice_cfg.get("submit_mode")
-    normalized = submit_mode.strip().lower() if isinstance(submit_mode, str) else None
-    if normalized not in {"direct", "draft"}:
-        _issue(issues, "error", f"voice.submit_mode must be 'direct' or 'draft', got {submit_mode!r}",
-               "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
+    for key, choices, hint in (
+        ("submit_mode", {"direct", "draft"}, "direct (submit immediately) or draft (edit before sending)"),
+        ("auto_tts_mode", {"all", "voice_only"}, "all (audio with every reply) or voice_only (audio only after voice input)"),
+    ):
+        if key not in voice_cfg:
+            continue
+        value = voice_cfg[key]
+        normalized = value.strip().lower() if isinstance(value, str) else None
+        if normalized not in choices:
+            _issue(issues, "error", f"voice.{key} must be {' or '.join(repr(c) for c in sorted(choices))}, got {value!r}",
+                   f"Set voice.{key} to {hint}")
 
 
 def _validate_entry_list(

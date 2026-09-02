@@ -1861,6 +1861,7 @@ class BasePlatformAdapter(ABC):
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
+        self._auto_tts_mode: str = "all"
         self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
         # Turn keys where streaming TTS already delivered audio; whole-file auto-TTS skips them.
         # When the gateway streaming-TTS consumer successfully delivers audio, it adds the turn key here so

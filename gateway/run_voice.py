@@ -117,9 +117,17 @@ class GatewayVoiceMixin:
             return
         try:
             from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            voice_cfg = load_config().get("voice") or {}
+            auto_tts_default = bool(voice_cfg.get("auto_tts", False))
+            auto_tts_mode = str(voice_cfg.get("auto_tts_mode", "all")).strip().lower()
+            if auto_tts_mode not in {"all", "voice_only"}:
+                logger.warning("Invalid voice.auto_tts_mode=%r; falling back to all", auto_tts_mode)
+                auto_tts_mode = "all"
         except Exception:
             auto_tts_default = False
+            auto_tts_mode = "all"
+        if hasattr(adapter, "_auto_tts_mode"):
+            adapter._auto_tts_mode = auto_tts_mode
         if hasattr(adapter, "_auto_tts_default"):
             adapter._auto_tts_default = auto_tts_default
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
@@ -290,12 +298,14 @@ class GatewayVoiceMixin:
         is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._adapter_for_source(event.source)
         adapter_auto_tts = False
+        adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
-                or (voice_mode is None and adapter_auto_tts)):
+                or (voice_mode is None and adapter_auto_tts
+                    and (adapter_auto_tts_mode == "all" or is_voice_input))):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
