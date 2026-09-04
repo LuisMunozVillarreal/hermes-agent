@@ -295,11 +295,7 @@ class GatewayVoiceMixin:
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
-        is_native_voice_input = event.message_type == MessageType.VOICE
-        is_voice_input = is_native_voice_input or (
-            event.message_type == MessageType.AUDIO
-            and bool(getattr(self.config, "stt_transcribe_audio_attachments", False))
-        )
+        is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._adapter_for_source(event.source)
         adapter_auto_tts = False
         adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
@@ -323,7 +319,7 @@ class GatewayVoiceMixin:
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.
-        return not (is_native_voice_input and not already_sent)
+        return not (is_voice_input and not already_sent)
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
