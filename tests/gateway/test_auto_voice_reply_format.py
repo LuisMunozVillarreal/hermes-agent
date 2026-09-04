@@ -130,6 +130,20 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_voice_only_replies_to_opted_in_audio_attachments(self):
+        """An audio file routed through STT is voice input for reply purposes."""
+        runner = _make_runner()
+        runner.config = MagicMock(stt_transcribe_audio_attachments=True)
+        adapter = _make_adapter(Platform.DISCORD)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        adapter._auto_tts_mode = "voice_only"
+        runner.adapters[Platform.DISCORD] = adapter
+        audio_event = _make_event(
+            Platform.DISCORD, chat_id="123", message_type=MessageType.AUDIO
+        )
+
+        assert runner._should_send_voice_reply(audio_event, "hello", []) is True
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
