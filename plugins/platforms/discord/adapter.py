@@ -83,9 +83,10 @@ class _Snowflake:
 class _AutoThreadRateLimited(Exception):
     """Discord refused auto-thread creation and supplied a retry delay."""
 
-    def __init__(self, retry_after: float) -> None:
-        self.retry_after_seconds = max(1, math.ceil(retry_after))
-        super().__init__(f"Discord rate-limited thread creation for {self.retry_after_seconds}s")
+    def __init__(self, retry_after: Optional[float]) -> None:
+        self.retry_after_seconds = None if retry_after is None else max(1, math.ceil(retry_after))
+        detail = "an unknown duration" if self.retry_after_seconds is None else f"{self.retry_after_seconds}s"
+        super().__init__(f"Discord rate-limited thread creation for {detail}")
 
 
 def _format_retry_delay(seconds: int) -> str:
@@ -104,6 +105,7 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -1554,6 +1556,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
+                max_ratelimit_timeout=_DISCORD_MAX_RATE_LIMIT_WAIT_SECONDS,
                 **proxy_kwargs_for_bot(proxy_url),
             )
             # Fresh connection, fresh dispatch-side silence window: the previous client's last
@@ -5560,12 +5563,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             except Exception as direct_error:
                 last_direct_error = direct_error
                 if self._is_discord_rate_limit(direct_error):
-                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    retry_after = self._extract_discord_retry_after(direct_error)
                     logger.warning(
-                        "[%s] Discord rate-limited auto-thread creation; retry after %.2fs",
-                        self.name, retry_after,
+                        "[%s] Discord rate-limited auto-thread creation; retry after %s",
+                        self.name, f"{retry_after:.2f}s" if retry_after is not None else "unknown delay",
                     )
                     raise _AutoThreadRateLimited(retry_after) from direct_error
+                seed_msg = None
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
@@ -5573,10 +5577,22 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
                     if self._is_discord_rate_limit(fallback_error):
-                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        retry_after = self._extract_discord_retry_after(fallback_error)
+                        delete_seed = getattr(seed_msg, "delete", None)
+                        if callable(delete_seed):
+                            try:
+                                delete_result = delete_seed()
+                                if inspect.isawaitable(delete_result):
+                                    await delete_result
+                            except Exception:
+                                logger.debug(
+                                    "[%s] Failed to remove auto-thread fallback seed after rate limit",
+                                    self.name,
+                                    exc_info=True,
+                                )
                         logger.warning(
-                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %.2fs",
-                            self.name, retry_after,
+                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %s",
+                            self.name, f"{retry_after:.2f}s" if retry_after is not None else "unknown delay",
                         )
                         raise _AutoThreadRateLimited(retry_after) from fallback_error
                     if attempt == 0:
@@ -6275,10 +6291,14 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
                         if rate_limit_error is not None:
-                            retry_delay = _format_retry_delay(rate_limit_error.retry_after_seconds)
+                            if rate_limit_error.retry_after_seconds is None:
+                                retry_instruction = "Try again later"
+                            else:
+                                retry_delay = _format_retry_delay(rate_limit_error.retry_after_seconds)
+                                retry_instruction = f"Try again in {retry_delay}"
                             notice = (
                                 "⚠️ Discord is temporarily rate-limiting Hermes from creating another "
-                                f"thread. This message was not processed. Try again in {retry_delay}, "
+                                f"thread. This message was not processed. {retry_instruction}, "
                                 "or continue in an existing thread."
                             )
                         else:
