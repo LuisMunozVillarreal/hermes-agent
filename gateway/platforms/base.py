@@ -4155,9 +4155,7 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path, _tts_error_notice = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
-                _tts_cleanup_paths.update(
-                    {_tts_requested_path, *_tts_paths} - {None}
-                )
+                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
