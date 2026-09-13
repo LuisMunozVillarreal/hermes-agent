@@ -446,6 +446,15 @@ def _dispatch_background(batch: _Batch) -> str:
     if queued:
         payload.update(status="queued" if len(queued) == len(accepted) else "dispatched",
                        queued_units=queued, queue_reason=queued[0].get("queue_reason", "capacity"))
+        payload["control_hint"] = (
+            "Use delegate_task(action='list') to obtain subagent IDs when intervention is needed; "
+            "then use action='steer' or action='stop' with the subagent_id."
+        )
+        payload["note"] = (
+            "Delegation work is queued pending capacity or resources; queued units have not started. "
+            "Accepted work will run automatically and its result will re-enter the conversation. "
+            "Do not poll or re-dispatch it."
+        )
     if rejected:
         payload["rejected_units"] = rejected
     return json.dumps(payload, ensure_ascii=False)

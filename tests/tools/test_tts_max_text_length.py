@@ -134,7 +134,7 @@ class TestTextToSpeechToolChunking:
             return output_path
 
         monkeypatch.setattr("tools.tts_tool._generate_gemini_tts", fake_gemini)
-        monkeypatch.setattr("tools.tts_tool._concat_audio_files", fake_combine)
+        monkeypatch.setattr("tools.tts_tool_delivery._concat_audio_files", fake_combine)
         monkeypatch.setattr(
             "tools.tts_tool._load_tts_config",
             lambda: {"provider": "gemini"},

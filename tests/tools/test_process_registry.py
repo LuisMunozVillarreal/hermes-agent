@@ -2528,7 +2528,7 @@ class TestSystemdCgroupIsolation:
         import socket
         import tempfile
 
-        import tools.process_registry as pr
+        import tools.systemd_scope as pr
 
         # Short path: AF_UNIX socket paths are capped at ~104 bytes, longer than most tmp_path values.
         runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
@@ -2571,7 +2571,7 @@ class TestSystemdCgroupIsolation:
     @pytest.mark.linux_only
     def test_probe_succeeds_without_bin_true(self, monkeypatch):
         """An absent ``/bin/true`` must not make a usable scope fail its probe."""
-        import tools.process_registry as pr
+        import tools.systemd_scope as pr
 
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
@@ -2742,7 +2742,7 @@ class TestSystemdCgroupIsolation:
 
         monkeypatch.setattr(pr, "_IS_LINUX", False)
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr("tools.systemd_scope._SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process", lambda: True
@@ -2782,7 +2782,7 @@ class TestSystemdCgroupIsolation:
     def test_probe_returns_false_off_linux(self, monkeypatch):
         """``_systemd_run_user_scope_available`` is False on non-Linux even
         when a ``systemd-run`` binary exists on PATH."""
-        import tools.process_registry as pr
+        import tools.systemd_scope as pr
 
         monkeypatch.setattr(pr, "_IS_LINUX", False)
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)

@@ -199,6 +199,7 @@ def test_capacity_queue_never_falls_back_to_synchronous_execution(monkeypatch):
         chat_id="raw-sid-queued",
         session_key="raw-sid-queued",
         session_id="raw-sid-queued",
+        session_history_delivery="1",
         async_delivery=False,
     )
 
@@ -206,7 +207,7 @@ def test_capacity_queue_never_falls_back_to_synchronous_execution(monkeypatch):
         "tools.async_delegation.dispatch_async_delegation_batch",
         lambda **_kwargs: {
             "status": "queued",
-            "delegation_id": "deleg_queued1",
+            "delegation_id": _kwargs["delegation_id"],
             "queue_reason": "capacity",
         },
     )
@@ -223,7 +224,7 @@ def test_capacity_queue_never_falls_back_to_synchronous_execution(monkeypatch):
 
     assert parsed["status"] == "queued"
     assert parsed["mode"] == "background"
-    assert parsed["delegation_id"] == "deleg_queued1"
+    assert parsed["delegation_id"] == parsed["queued_units"][0]["delegation_id"]
     assert parsed["queue_reason"] == "capacity"
     assert "queued" in parsed["note"].lower()
     assert "subagent_ids" not in parsed
@@ -237,6 +238,7 @@ def test_capacity_queue_defers_child_construction_until_admitted(monkeypatch):
         chat_id="raw-sid-lazy",
         session_key="raw-sid-lazy",
         session_id="raw-sid-lazy",
+        session_history_delivery="1",
         async_delivery=False,
     )
     build_calls = []
@@ -274,6 +276,7 @@ def test_resource_queue_builds_child_only_after_promotion(monkeypatch):
         chat_id="raw-sid-promote",
         session_key="raw-sid-promote",
         session_id="raw-sid-promote",
+        session_history_delivery="1",
         async_delivery=False,
     )
     available = {"bytes": 0}
@@ -332,6 +335,7 @@ def test_cancel_during_lazy_child_build_is_nonblocking_and_cleans_up(monkeypatch
         chat_id="raw-sid-cancel-build",
         session_key="raw-sid-cancel-build",
         session_id="raw-sid-cancel-build",
+        session_history_delivery="1",
         async_delivery=False,
     )
     build_started = threading.Event()
@@ -377,6 +381,7 @@ def test_queue_configuration_is_forwarded_to_async_admission(monkeypatch):
         chat_id="raw-sid-config",
         session_key="raw-sid-config",
         session_id="raw-sid-config",
+        session_history_delivery="1",
         async_delivery=False,
     )
     captured = {}

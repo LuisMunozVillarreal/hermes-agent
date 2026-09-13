@@ -605,14 +605,25 @@ def _queue_head_locked() -> Optional[str]:
     return None
 
 
+def _admitted_slots_locked() -> Dict[str, int]:
+    """Group completion units by their call's capacity reservation."""
+    slots: Dict[str, int] = {}
+    for delegation_id, record in _records.items():
+        if record.get("status") in {"running", "stalling", "finalizing"}:
+            key = record.get("slot_key") or delegation_id
+            slots[key] = max(slots.get(key, 0), max(1, int(record.get("required_slots", 1))))
+    return slots
+
+
 def _running_task_slots_locked() -> int:
-    """Return admitted and still-live child slots. Caller holds record lock."""
-    running = sum(
-        max(1, int(record.get("required_slots", 1)))
-        for record in _records.values()
-        if record.get("status") in {"running", "stalling", "finalizing"}
-    )
-    return running + sum(_lingering_resource_slots.values())
+    """Return admitted reservations plus resources whose workers still linger."""
+    return sum(_admitted_slots_locked().values()) + sum(_lingering_resource_slots.values())
+
+
+def _additional_slots_locked(record: Dict[str, Any]) -> int:
+    key = record.get("slot_key") or record["delegation_id"]
+    reserved = _admitted_slots_locked().get(key, 0)
+    return max(0, int(record.get("required_slots", 1)) - reserved)
 
 
 def _register_lingering_resources(
@@ -657,9 +668,9 @@ def _wait_for_admission(delegation_id: str) -> bool:
             if queue_timeout and time.monotonic() - queued_at >= queue_timeout:
                 expired = True
                 break
-            required = max(1, int(record.get("required_slots", 1)))
+            required = _additional_slots_locked(record)
             limit = max(1, int(record.get("max_async_children", 1)))
-            is_head = _queue_head_locked() == delegation_id
+            is_head = required == 0 or _queue_head_locked() == delegation_id
             slots_ready = _running_task_slots_locked() + required <= limit
             resources_ready = is_head and slots_ready and _resources_available(record)
             if not is_head:
@@ -920,7 +931,10 @@ def _dispatch(
     crash_result = _batch_crash if is_batch else _single_crash
     required_slots = len(task_indexes if task_indexes is not None else goals) if is_batch else 1
     if required_slots < 1 or required_slots > max_async_children:
-        return {"status": "rejected", "error": "Delegation batch exceeds available child slots or is empty."}
+        return {"status": "rejected", "error": (
+            f"Delegation batch requires {required_slots} child slots; "
+            f"the configured limit is {max_async_children}."
+        )}
     dispatched_at = time.time()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id, "goal": goal, **({"goals": list(goals)} if is_batch else {}),
@@ -949,8 +963,8 @@ def _dispatch(
                 "error": "Async delegation manager is shutting down.",
             }
         capacity_ready = (
-            _queue_head_locked() is None
-            and _running_task_slots_locked() + record["required_slots"]
+            (_additional_slots_locked(record) == 0 or _queue_head_locked() is None)
+            and _running_task_slots_locked() + _additional_slots_locked(record)
             <= max_async_children
         )
         resources_ready = _resources_available(record)
@@ -979,7 +993,7 @@ def _dispatch(
             "error": f"Failed to persist async delegation: {exc}",
         }
     try:
-        executor = _get_executor(max_async_children)
+        executor = _get_executor(max(max_async_children, active_count()))
     except Exception as exc:
         with _admission_condition:
             _records.pop(delegation_id, None)
@@ -1142,6 +1156,10 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
     snapshot, _ = claimed
     try:
         _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    except Exception:
+        # Preserve the stall monitor and release admission waiters even if the
+        # durable completion store fails. Recovery can reconcile the old row.
+        logger.exception("Failed to publish terminal event for delegation %s", delegation_id)
     finally:
         _finish_finalization(delegation_id, status)
 
@@ -1501,7 +1519,7 @@ def active_for_session(origin_ui_session_id: str) -> int:
         return sum(
             1
             for r in _records.values()
-            if r.get("status") in {"running", "stalling", "finalizing"}
+            if r.get("status") in _LIVE_STATES
             and str(r.get("origin_ui_session_id") or "")
             == origin_ui_session_id
         )

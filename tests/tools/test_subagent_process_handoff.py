@@ -36,8 +36,8 @@ def _register(sid, child):
 @pytest.fixture(autouse=True)
 def _plain_spawn(monkeypatch):
     """Spawn plain children: the systemd-run --user --scope wrapper is irrelevant here and stalls under pytest."""
-    import tools.process_registry as _pr
-    monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
+    import tools.systemd_scope as scope
+    monkeypatch.setattr(scope, "_SYSTEMD_SCOPE_AVAILABLE", False)
 
 
 @pytest.fixture

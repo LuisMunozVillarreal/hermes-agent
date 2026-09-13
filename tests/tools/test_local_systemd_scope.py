@@ -64,7 +64,7 @@ def test_foreground_gateway_command_runs_in_transient_scope(tmp_path, monkeypatc
         if value == "--property"
     ]
     assert "MemoryAccounting=yes" in properties
-    assert "OOMPolicy=kill" in properties
+    assert not any(prop.startswith("OOMPolicy=") for prop in properties)
     assert "TimeoutStopSec=3s" in properties
     memory_max = next(value for value in properties if value.startswith("MemoryMax="))
     assert int(memory_max.partition("=")[2]) > 0

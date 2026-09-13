@@ -444,7 +444,7 @@ class TestGenerateGeminiTts:
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         with patch(
-            "tools.tts_tool._read_gemini_persona_prompt",
+            "tools.tts_tool_providers._read_gemini_persona_prompt",
             return_value="P" * 1000,
         ), patch("requests.post", return_value=mock_gemini_response):
             _generate_gemini_tts(

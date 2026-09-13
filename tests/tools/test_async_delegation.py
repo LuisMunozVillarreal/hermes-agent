@@ -1183,7 +1183,11 @@ def test_stalled_finalize_persist_failure_still_releases_slot(monkeypatch):
     with ad._records_lock:
         ad._records[record["delegation_id"]] = record
 
-    ad._finalize_stalled(record["delegation_id"])
+    ad._finalize(
+        record["delegation_id"],
+        lambda rec: ad._stalled_result(record["delegation_id"], rec),
+        "stalled",
+    )
     # Record must be terminalized (slot released) despite the persist failure.
     with ad._records_lock:
         assert ad._records[record["delegation_id"]]["status"] == "stalled"
