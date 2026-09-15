@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
 )
@@ -196,7 +196,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
     lingering = [getattr(c, "_delegate_lingering_future", None) for _, _, c in batch.children]
     lingering = [f for f in lingering if f is not None and not f.done()]
-    if lingering:
+    if lingering and not honor_parent_interrupt:
         combined["_lingering_futures"] = lingering
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
@@ -378,7 +378,6 @@ def _units_of(batch: _Batch) -> List[_Batch]:
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
-    child_agents = [c for (_, _, c) in unit.children]
 
     def _interrupt():
         unit.stop_requested.set()
@@ -397,17 +396,9 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         progress_fn=lambda: _batch_progress_token([c for _, _, c in unit.children if c is not None]), **routing,
     )
 
-def _restore_parent_cancellation(unit: _Batch) -> None:
-    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
-    arrived while async admission had them detached)."""
-    for _, _, child in unit.children:
-        _attach_child(unit.parent_agent, child)
-
 def _dispatch_background(batch: _Batch) -> str:
-    """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
-    of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
-    running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
-    async pool is at capacity."""
+    """Dispatch independent units sharing one pool slot. Capacity queues or rejects
+    work before construction; only sessions without detached delivery run inline."""
     from tools import delegate_tool as origin
     wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:

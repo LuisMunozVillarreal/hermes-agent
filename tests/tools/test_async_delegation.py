@@ -1219,7 +1219,7 @@ def test_prune_durable_records_preserves_live_queued_rows(monkeypatch, tmp_path)
     """M3: durable pruning must never delete a live queued row."""
     import gateway.status as gateway_status
 
-    ad._db_path = lambda: tmp_path / "state.db"
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: False)
     now = time.time()
     # A live queued row with a frozen updated_at (oldest pending row).

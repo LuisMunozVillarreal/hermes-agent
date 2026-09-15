@@ -180,15 +180,26 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
         captured.update(kwargs)
         raise ReachedConstructor()
 
+    import queue
+    from tools import async_delegation
+    from tools.process_registry import process_registry
+
+    completions = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", completions)
+    async_delegation._reset_for_tests()
     token = set_hermes_home_override(tmp_path)
     try:
         with patch("run_agent.AIAgent", side_effect=capture):
-            with pytest.raises(ReachedConstructor):
-                start_review(
-                    parent,
-                    [{"role": "user", "content": "Check the last result"}],
-                )
+            result = start_review(
+                parent,
+                [{"role": "user", "content": "Check the last result"}],
+            )
+            assert result["status"] == "dispatched"
+            completion = completions.get(timeout=5)
+            assert completion["delegation_id"] == result["delegation_id"]
+            assert completion["status"] == "error"
     finally:
+        async_delegation._reset_for_tests()
         reset_hermes_home_override(token)
 
     assert captured["model"] == "review-model"
