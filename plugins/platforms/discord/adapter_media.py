@@ -41,6 +41,7 @@ class DiscordMediaMixin:
 
     async def _reject_oversized_upload(
         self, channel: Any, file_path: str, filename: str, *, caption: Optional[str] = None,
+        notify_failure: bool = True,
     ) -> Optional[SendResult]:
         """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
         ``413`` round-trip is skipped and the user gets a notice naming the size and the
@@ -56,6 +57,8 @@ class DiscordMediaMixin:
         limit_mb = limit / (1024 * 1024)
         error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
         logger.warning("[%s] %s", self.name, error)
+        if not notify_failure:  # auto-TTS owns its one anchored failure notice
+            return SendResult(success=False, error=error)
         notice = (
             f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds Discord's "
             f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
@@ -289,7 +292,9 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
-            rejected = await self._reject_oversized_upload(channel, audio_path, filename, caption=caption)
+            rejected = await self._reject_oversized_upload(
+                channel, audio_path, filename, caption=caption,
+                notify_failure=kwargs.get("notify_failure", True))
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)
