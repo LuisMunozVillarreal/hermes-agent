@@ -150,7 +150,11 @@ class DiscordTypingMixin:
             finally:
                 if self._typing_tasks.get(chat_id) is asyncio.current_task():
                     self._typing_tasks.pop(chat_id, None)
-                    if not self._typing_active(chat_id):
+                    if self._typing_active(chat_id):
+                        # A successor may finish its foreground turn while this
+                        # transport drains, leaving only its worker as an owner.
+                        await self.send_typing(chat_id)
+                    else:
                         self._typing_owners.pop(chat_id, None)
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
@@ -172,3 +176,7 @@ class DiscordTypingMixin:
                 # A task cancelled before its first step never runs its finally.
                 if task.done() and self._typing_tasks.get(chat_id) is task:
                     self._typing_tasks.pop(chat_id, None)
+                    if self._typing_active(chat_id):
+                        await self.send_typing(chat_id)
+                    else:
+                        self._typing_owners.pop(chat_id, None)
