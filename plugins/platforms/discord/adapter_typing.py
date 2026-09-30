@@ -9,7 +9,39 @@ logger = logging.getLogger(__name__)
 class DiscordTypingMixin:
     _TYPING_REQUEST_TIMEOUT = 4.0
 
+    async def _request_typing(self, http, route):
+        from aiohttp import ClientTimeout
+
+        # Bound socket I/O, not discord.py's rate-limit waits. Cancelling request()
+        # during a global 429 sleep strands its shared gate (no finally upstream).
+        request = asyncio.create_task(http.request(
+            route, timeout=ClientTimeout(total=self._TYPING_REQUEST_TIMEOUT)))
+        try:
+            await asyncio.shield(request)
+        except asyncio.CancelledError:
+            async def drain():
+                gate = getattr(http, "_global_over", None)
+                while not request.done() and gate is not None and not gate.is_set():
+                    await gate.wait()
+                # No await between observing the open gate and cancellation:
+                # request cannot enter another global backoff in that interval.
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+            cleanup = asyncio.create_task(drain())
+            # Repeated stop/shutdown cancellation must not interrupt gate recovery
+            # or leave an HTTP request orphaned after its typing owner exits.
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            cleanup.result()
+            raise
+
     def _start_typing_refresh(self, event, interrupt_event, metadata):
+        if self._disconnecting or not self._client:
+            return None
         task = super()._start_typing_refresh(event, interrupt_event, metadata)
         if task is not None:
             # These are typing owners, not a second worker registry. A new turn
@@ -19,6 +51,8 @@ class DiscordTypingMixin:
         return task
 
     def _typing_active(self, chat_id):
+        if self._disconnecting or not self._client:
+            return False
         from tools.async_delegation import has_live_for_session
         from tools.process_registry import process_registry
 
@@ -65,7 +99,7 @@ class DiscordTypingMixin:
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
         from .adapter import discord  # optional dependency, resolved by the facade
 
-        if not self._client:
+        if self._disconnecting or not self._client:
             return
         if chat_id in self._typing_tasks:
             return
@@ -74,7 +108,7 @@ class DiscordTypingMixin:
 
         async def _typing_loop() -> None:
             try:
-                while True:
+                while self._client and not self._disconnecting:
                     if managed and not self._typing_active(chat_id):
                         return
                     if chat_id in self._typing_paused:
@@ -84,10 +118,7 @@ class DiscordTypingMixin:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
                         )
-                        # No detached request task: cancellation and the deadline
-                        # unwind the HTTP coroutine before the owner exits.
-                        async with asyncio.timeout(self._TYPING_REQUEST_TIMEOUT):
-                            await self._client.http.request(route)
+                        await self._request_typing(self._client.http, route)
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
@@ -128,10 +159,16 @@ class DiscordTypingMixin:
         if self._typing_active(chat_id):
             return
         self._typing_owners.pop(chat_id, None)
-        task = self._typing_tasks.pop(chat_id, None)
+        # Keep the task registered until its HTTP cleanup finishes so a concurrent
+        # refresh cannot replace it while a global rate-limit gate is recovering.
+        task = self._typing_tasks.get(chat_id)
         if task:
             task.cancel()
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+            finally:
+                # A task cancelled before its first step never runs its finally.
+                if task.done() and self._typing_tasks.get(chat_id) is task:
+                    self._typing_tasks.pop(chat_id, None)
