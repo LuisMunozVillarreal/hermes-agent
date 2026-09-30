@@ -4221,7 +4221,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
+        """Start a persistent typing loop (POST typing every 5s; indicator lasts ~10s).
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
         if not self._client:
             return
@@ -4250,7 +4250,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             return
                         await asyncio.sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    await asyncio.sleep(5)
             except asyncio.CancelledError:
                 pass
             finally:
