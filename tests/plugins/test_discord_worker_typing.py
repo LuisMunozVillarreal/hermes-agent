@@ -96,6 +96,151 @@ async def test_real_http_global_backoff_does_not_strand_other_sends(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["successor", "bounded_shutdown", "fatal_disconnect"])
+async def test_real_http_backoff_hands_off_typing_ownership(monkeypatch, typing_clock, ending):
+    import discord.http
+    from gateway.platforms.event import MessageEvent
+    from tools import process_registry as processes
+
+    ticks, resume = typing_clock
+    adapter = DiscordAdapter(PlatformConfig(enabled=True))
+    http = discord.http.HTTPClient(asyncio.get_running_loop())
+    http._global_over = asyncio.Event()
+    http._global_over.set()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def backoff(delay):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(discord.http, "asyncio", SimpleNamespace(
+        **{name: getattr(asyncio, name) for name in dir(asyncio) if not name.startswith("_")},
+    ))
+    monkeypatch.setattr(discord.http.asyncio, "sleep", backoff)
+    calls = []
+
+    class Response:
+        reason = "test"
+        headers = {"content-type": "application/json", "Via": "test"}
+
+        def __init__(self, status, body):
+            self.status, self.body = status, body
+
+        async def text(self, **kwargs):
+            return json.dumps(self.body)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, asyncio.current_task()))
+        if len(calls) == 1:
+            return Response(429, {"retry_after": 20, "global": True})
+        assert release.is_set(), "request escaped the allowed global backoff"
+        return Response(204, {})
+
+    http._HTTPClient__session = SimpleNamespace(request=request)
+    adapter._client = SimpleNamespace(http=http, close=AsyncMock())
+    registry = processes.ProcessRegistry()
+    monkeypatch.setattr(processes, "process_registry", registry)
+    event = MessageEvent(text="work", source=adapter.build_source(
+        chat_id="100", chat_type="group", user_id="1"))
+    successor = MessageEvent(text="work", source=adapter.build_source(
+        chat_id="100", chat_type="group", user_id="2"))
+    key = adapter._event_session_key(event)
+    successor_key = adapter._event_session_key(successor)
+    assert key != successor_key
+    old = processes.ProcessSession(id="old", command="build", session_key=key, notify_on_complete=True)
+    new = processes.ProcessSession(id="new", command="test", session_key=successor_key, notify_on_complete=True)
+    stopping = None
+    try:
+        async def first_handler(event):
+            if ending != "successor":
+                registry._running[old.id] = old
+            await asyncio.wait_for(entered.wait(), 5)
+
+        adapter.set_message_handler(first_handler)
+        await adapter.handle_message(event)
+        if ending == "successor":
+            stopping = adapter._session_tasks[key]
+            await asyncio.wait_for(entered.wait(), 5)
+            async with asyncio.timeout(5):
+                while not adapter._typing_tasks["100"].cancelling():
+                    await asyncio.sleep(0)
+        else:
+            await asyncio.gather(*list(adapter._background_tasks))
+        old_typing = adapter._typing_tasks["100"]
+        if ending != "successor":
+            from gateway.config import Platform
+            from gateway.run_adapters import GatewayAdapterLifecycleMixin
+
+            lifecycle = GatewayAdapterLifecycleMixin()
+            monkeypatch.setattr(lifecycle, "_adapter_disconnect_timeout_secs", lambda: 0.05)
+            client = adapter._client
+            if ending == "bounded_shutdown":
+                await lifecycle._bounded_adapter_teardown(adapter, Platform.DISCORD)
+            else:
+                await lifecycle._safe_adapter_disconnect(adapter, Platform.DISCORD)
+            assert not old_typing.done()
+            assert not http._global_over.is_set()
+            release.set()
+            async with asyncio.timeout(5):
+                while adapter._client is not None:
+                    await asyncio.sleep(0.01)
+            assert old_typing.done()
+            assert not adapter._typing_tasks
+            assert not adapter._typing_owners
+            assert http._global_over.is_set()
+            client.close.assert_awaited_once()
+            await adapter.send_typing("100")
+            assert not adapter._typing_tasks
+            return
+
+        assert not stopping.done()
+
+        async def successor_handler(event):
+            registry._running[new.id] = new
+            await adapter.send_typing("100")
+            await asyncio.sleep(0)
+
+        adapter.set_message_handler(successor_handler)
+        await adapter.handle_message(successor)
+        await adapter._session_tasks[successor_key]
+        assert registry.has_completion_work_for_session(successor_key)
+        assert adapter._typing_owners["100"][successor_key][0].done()
+        assert adapter._typing_active("100")
+        assert adapter._typing_tasks["100"] is old_typing
+        assert not http._global_over.is_set()
+        release.set()
+        await asyncio.wait_for(stopping, 5)
+        assert "100" in adapter._typing_tasks, "live successor worker lost native typing"
+        replacement = adapter._typing_tasks["100"]
+        assert replacement is not old_typing
+        assert old_typing.done()
+        assert http._global_over.is_set()
+        # The old stop finalizer must preserve the replacement, which must POST
+        # through the real HTTPClient, not merely occupy the task registry.
+        await asyncio.wait_for(ticks.get(), 5)
+        assert any(method == "POST" and url.endswith("/channels/100/typing")
+                   and task is not calls[0][2] for method, url, task in calls)
+        new.exited = True
+        resume.put_nowait(None)
+        await asyncio.wait_for(replacement, 5)
+        assert not adapter._typing_tasks
+        assert not adapter._typing_owners
+    finally:
+        old.exited = new.exited = True
+        release.set()
+        if stopping is not None:
+            await asyncio.gather(stopping, return_exceptions=True)
+        await adapter.cancel_background_tasks()
+    assert all(task.done() for _, _, task in calls)
+
+
+@pytest.mark.asyncio
 async def test_stop_before_first_request_releases_typing_task():
     adapter = DiscordAdapter(PlatformConfig(enabled=True))
     adapter._client = SimpleNamespace(http=SimpleNamespace(request=AsyncMock()))
@@ -104,6 +249,48 @@ async def test_stop_before_first_request_releases_typing_task():
     assert not adapter._typing_tasks
     assert not adapter._typing_owners
     adapter._client.http.request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prestart_stop_hands_off_to_successor_worker(monkeypatch, typing_clock):
+    from gateway.platforms.event import MessageEvent
+    from tools import process_registry as processes
+
+    ticks, resume = typing_clock
+    adapter = DiscordAdapter(PlatformConfig(enabled=True))
+    request = AsyncMock()
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=request))
+    event = MessageEvent(text="work", source=adapter.build_source(chat_id="100", user_id="2"))
+    key = adapter._event_session_key(event)
+    registry = processes.ProcessRegistry()
+    worker = processes.ProcessSession(id="new", command="build", session_key=key, notify_on_complete=True)
+    registry._running[worker.id] = worker
+    monkeypatch.setattr(processes, "process_registry", registry)
+    try:
+        await adapter.send_typing("100")
+        old_typing = adapter._typing_tasks["100"]
+        # Admit the successor while stop awaits the never-started transport.
+        asyncio.get_running_loop().call_soon(
+            adapter._start_typing_refresh, event, asyncio.Event(), None)
+        await adapter.stop_typing("100")
+        assert old_typing.cancelled()
+        request.assert_not_awaited()
+        assert "100" in adapter._typing_tasks, "prestart cleanup lost the successor"
+        replacement = adapter._typing_tasks["100"]
+        assert replacement is not old_typing
+        refresh = adapter._typing_owners["100"][key][0]
+        refresh.cancel()
+        await asyncio.gather(refresh, return_exceptions=True)
+        await asyncio.wait_for(ticks.get(), 5)
+        request.assert_awaited_once()
+        worker.exited = True
+        resume.put_nowait(None)
+        await asyncio.wait_for(replacement, 5)
+        assert not adapter._typing_tasks
+        assert not adapter._typing_owners
+    finally:
+        worker.exited = True
+        await adapter.cancel_background_tasks()
 
 
 @pytest.fixture
@@ -481,7 +668,7 @@ async def test_native_typing_refreshes_before_discord_expiry(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("worker_kind", ["delegation", pytest.param("process", marks=pytest.mark.platforms("posix"))])
+@pytest.mark.parametrize("worker_kind", ["delegation", pytest.param("process", marks=pytest.mark.linux_only)])
 @pytest.mark.parametrize("ending", ["complete", "shutdown", "disconnect", "reset", "stop_command", "new_command"])
 async def test_typing_survives_foreground_and_sibling_completion(tmp_path, monkeypatch, worker_kind, ending):
     import threading
