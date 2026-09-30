@@ -1939,6 +1939,9 @@ class DiscordAdapter(DiscordTypingMixin, DiscordMediaMixin, BasePlatformAdapter)
         self._disconnecting = True
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
+        # Fatal/reconnect callers invoke disconnect directly, without the normal
+        # shutdown cleanup. Drain typing owners before closing their HTTP client.
+        await self.cancel_background_tasks()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):

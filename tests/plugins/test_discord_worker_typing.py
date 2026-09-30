@@ -1,6 +1,7 @@
 """Native Discord typing must cover the whole conversation's live work."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +9,101 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["refresh", "stop", "cancel_stop"])
+async def test_real_http_global_backoff_does_not_strand_other_sends(monkeypatch, ending):
+    import discord.http
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True))
+    http = discord.http.HTTPClient(asyncio.get_running_loop())
+    http._global_over = asyncio.Event()
+    http._global_over.set()
+    backoff_started = asyncio.Event()
+    backoff_finished = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        backoff_started.set()
+        await real_sleep(delay)
+        backoff_finished.set()
+
+    monkeypatch.setattr(discord.http, "asyncio", SimpleNamespace(
+        **{name: getattr(asyncio, name) for name in dir(asyncio) if not name.startswith("_")},
+    ))
+    monkeypatch.setattr(discord.http.asyncio, "sleep", sleep)
+    calls = []
+    request_tasks = set()
+
+    class Response:
+        def __init__(self, status, body):
+            self.status, self.body = status, body
+            self.reason = "test"
+            self.headers = {"content-type": "application/json", "Via": "test"}
+
+        async def text(self, **kwargs):
+            return json.dumps(self.body)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    def request(method, url, **kwargs):
+        request_tasks.add(asyncio.current_task())
+        calls.append(url)
+        if len(calls) == 1:
+            return Response(429, {"retry_after": 4.2, "global": True})
+        assert backoff_finished.is_set(), "request escaped the allowed global backoff"
+        return Response(200, {"id": "sent"})
+
+    http._HTTPClient__session = SimpleNamespace(request=request)
+    adapter._client = SimpleNamespace(http=http)
+    stopping = None
+    send = None
+    try:
+        await adapter.send_typing("100")
+        typing = adapter._typing_tasks["100"]
+        await asyncio.wait_for(backoff_started.wait(), 5)
+        send = asyncio.create_task(http.request(discord.http.Route(
+            "POST", "/channels/{channel_id}/messages", channel_id="200")))
+        if ending != "refresh":
+            stopping = asyncio.create_task(adapter.stop_typing("100"))
+            await real_sleep(0)
+            if ending == "cancel_stop":
+                stopping.cancel()
+                await real_sleep(0)
+                stopping.cancel()
+        # Includes the old 4s outer deadline and Discord's allowed 4.2s backoff.
+        done, _ = await asyncio.wait({send}, timeout=7)
+        assert send in done, "typing cancellation stranded Discord's global HTTP gate"
+        assert send.result() == {"id": "sent"}
+        assert backoff_finished.is_set()
+        if stopping is not None:
+            await asyncio.wait_for(asyncio.gather(stopping, return_exceptions=True), 5)
+            assert typing.done()
+            assert not adapter._typing_tasks
+    finally:
+        if send is not None:
+            send.cancel()
+            await asyncio.gather(send, return_exceptions=True)
+        await adapter.cancel_background_tasks()
+        if stopping is not None:
+            await asyncio.gather(stopping, return_exceptions=True)
+    assert all(task.done() for task in request_tasks), "HTTP cleanup left an orphan request"
+
+
+@pytest.mark.asyncio
+async def test_stop_before_first_request_releases_typing_task():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True))
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=AsyncMock()))
+    await adapter.send_typing("100")
+    await adapter.stop_typing("100")
+    assert not adapter._typing_tasks
+    assert not adapter._typing_owners
+    adapter._client.http.request.assert_not_awaited()
 
 
 @pytest.fixture
@@ -51,26 +147,45 @@ async def test_native_transport_honors_pause(typing_clock):
 
 @pytest.mark.asyncio
 async def test_stalled_native_request_is_bounded(monkeypatch):
+    import aiohttp
+    from aiohttp import web
+    import discord.http
+
     adapter = DiscordAdapter(PlatformConfig(enabled=True))
-    # Shorten the production bound without replacing asyncio's timeout/cancellation.
-    monkeypatch.setattr(adapter, "_TYPING_REQUEST_TIMEOUT", 0.01, raising=False)
-    cancelled = asyncio.Event()
+    # Exercise aiohttp's actual I/O deadline, not a mock of HTTPClient.request.
+    monkeypatch.setattr(adapter, "_TYPING_REQUEST_TIMEOUT", 2.0, raising=False)
+    entered, release = asyncio.Event(), asyncio.Event()
 
-    async def request(route):
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
+    async def stalled(request):
+        entered.set()
+        await release.wait()
+        return web.Response(status=204)
 
-    adapter._client = SimpleNamespace(http=SimpleNamespace(request=request))
+    app = web.Application()
+    app.router.add_post("/channels/{channel_id}/typing", stalled)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    host, port = runner.addresses[0]
+    monkeypatch.setattr(discord.http.Route, "BASE", f"http://{host}:{port}")
     try:
-        await adapter.send_typing("100")
-        task = adapter._typing_tasks["100"]
-        await asyncio.wait_for(cancelled.wait(), 5)
-        await asyncio.wait_for(task, 5)
-        assert not adapter._typing_tasks
+        async with aiohttp.ClientSession() as session:
+            http = discord.http.HTTPClient(asyncio.get_running_loop())
+            http._global_over = asyncio.Event()
+            http._global_over.set()
+            http._HTTPClient__session = session
+            adapter._client = SimpleNamespace(http=http)
+            await adapter.send_typing("100")
+            task = adapter._typing_tasks["100"]
+            await asyncio.wait_for(entered.wait(), 5)
+            done, _ = await asyncio.wait({task}, timeout=5)
+            assert task in done, "stalled network I/O exceeded the typing deadline"
+            assert not adapter._typing_tasks
     finally:
         await adapter.cancel_background_tasks()
+        release.set()
+        await runner.cleanup()
 
 
 
@@ -102,7 +217,7 @@ async def test_native_transport_failure_and_shutdown_leave_no_task(typing_clock,
     entered, exited = asyncio.Event(), asyncio.Event()
     adapter = DiscordAdapter(PlatformConfig(enabled=True))
 
-    async def request(route):
+    async def request(route, **kwargs):
         entered.set()
         try:
             if failure == "rate_limit":
@@ -226,7 +341,7 @@ async def test_active_turn_teardown_cannot_revive_native_typing(ending):
     entered, cancelled = asyncio.Event(), asyncio.Event()
     release = asyncio.Event()
 
-    async def request(route):
+    async def request(route, **kwargs):
         entered.set()
         try:
             await asyncio.Event().wait()
@@ -367,7 +482,7 @@ async def test_native_typing_refreshes_before_discord_expiry(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("worker_kind", ["delegation", pytest.param("process", marks=pytest.mark.platforms("posix"))])
-@pytest.mark.parametrize("ending", ["complete", "shutdown", "reset", "stop_command", "new_command"])
+@pytest.mark.parametrize("ending", ["complete", "shutdown", "disconnect", "reset", "stop_command", "new_command"])
 async def test_typing_survives_foreground_and_sibling_completion(tmp_path, monkeypatch, worker_kind, ending):
     import threading
     from gateway.platforms.event import MessageEvent
@@ -378,10 +493,10 @@ async def test_typing_survives_foreground_and_sibling_completion(tmp_path, monke
     adapter = DiscordAdapter(PlatformConfig(enabled=True))
     posts = asyncio.Queue()
 
-    async def request(route):
+    async def request(route, **kwargs):
         posts.put_nowait(route.channel_id)
 
-    adapter._client = SimpleNamespace(http=SimpleNamespace(request=request))
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=request), close=AsyncMock())
     event = MessageEvent(text="work", source=adapter.build_source(
         chat_id="100", chat_type="group", thread_id="100", user_id="1"))
     key = adapter._event_session_key(event)
@@ -432,6 +547,28 @@ async def test_typing_survives_foreground_and_sibling_completion(tmp_path, monke
         if ending != "complete":
             if ending == "shutdown":
                 await adapter.cancel_background_tasks()
+            elif ending == "disconnect":
+                tasks = list(adapter._typing_tasks.values())
+                closing_tasks = []
+
+                async def closing():
+                    # Closing may yield to a late refresh while _client still exists.
+                    await adapter.send_typing("100")
+                    closing_tasks.extend(adapter._typing_tasks.values())
+
+                adapter._client.close.side_effect = closing
+                await adapter.disconnect()
+                assert not closing_tasks
+                assert all(task.done() for task in tasks)
+                # A late foreground refresh must not resurrect disconnected owners
+                # or transport tasks, even though the detached worker is still live.
+                await asyncio.sleep(0)
+                await adapter.send_typing("100")
+                refresh = adapter._start_typing_refresh(event, asyncio.Event(), None)
+                if refresh is not None:
+                    refresh.cancel()
+                    await asyncio.gather(refresh, return_exceptions=True)
+                assert refresh is None
             elif ending == "reset":
                 await adapter.interrupt_session_activity(key, "100")
             else:
