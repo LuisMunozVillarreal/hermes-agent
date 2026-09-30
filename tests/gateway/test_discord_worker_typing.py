@@ -12,7 +12,7 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 
 @pytest.mark.asyncio
 async def test_native_typing_refreshes_before_discord_expiry(monkeypatch):
-    import plugins.platforms.discord.adapter as module
+    import plugins.platforms.discord.adapter_typing as module
 
     delays = asyncio.Queue()
     release = asyncio.Event()
