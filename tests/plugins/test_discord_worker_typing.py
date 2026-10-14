@@ -668,7 +668,7 @@ async def test_native_typing_refreshes_before_discord_expiry(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("worker_kind", ["delegation", pytest.param("process", marks=pytest.mark.linux_only)])
+@pytest.mark.parametrize("worker_kind", ["delegation", pytest.param("process", marks=pytest.mark.platforms("linux"))])
 @pytest.mark.parametrize("ending", ["complete", "shutdown", "disconnect", "reset", "stop_command", "new_command"])
 async def test_typing_survives_foreground_and_sibling_completion(tmp_path, monkeypatch, worker_kind, ending):
     import threading

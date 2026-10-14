@@ -4,6 +4,7 @@
 import pytest
 
 from hermes_cli.config import (
+    DEFAULT_CONFIG,
     validate_config_structure,
 )
 

@@ -311,7 +311,7 @@ async def wait_until(predicate):
             await asyncio.sleep(0.02)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stop", ["deadline", "shutdown", "session", "slash", "interrupt"])
 async def test_blocking_provider_is_killed_and_partial_files_removed(tmp_path, monkeypatch, stop):
