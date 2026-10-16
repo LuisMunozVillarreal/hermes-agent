@@ -9,6 +9,14 @@ from gateway.status import read_runtime_status
 
 
 @pytest.fixture(autouse=True)
+def _isolate_import_time_paths(monkeypatch, tmp_path):
+    """Import-time paths predate the per-test HERMES_HOME override."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
+
+
+@pytest.fixture(autouse=True)
 def _host_attach_gate_is_not_under_test(monkeypatch):
     """These tests exercise the STARTUP path, not the host-attach gate that now runs in front of it.
 
