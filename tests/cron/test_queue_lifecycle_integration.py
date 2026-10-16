@@ -200,6 +200,13 @@ def test_queued_recurring_overlap_misfire_and_ttl(managed_home):
     home, state = managed_home
     client, backend = Client(state), Systemd()
     marker = home / "must-not-run"
+    # Expiry is opt-in: native defaults preserve the scheduler's own lifecycle.
+    from ruamel.yaml import YAML
+    yaml = YAML()
+    config_path = home / "config.yaml"
+    config = yaml.load(config_path)
+    config["workloads"]["queue_ttl_seconds"] = 60
+    yaml.dump(config, config_path)
     with use_cron_store(home):
         job = create_script(home, f"from pathlib import Path\nPath({str(marker)!r}).touch()\nprint('ok')")
         assert client.call("status")["jobs"] == []
@@ -217,7 +224,7 @@ def test_queued_recurring_overlap_misfire_and_ttl(managed_home):
                 jobs[0]["next_run_at"] = (_hermes_now() - timedelta(minutes=30)).isoformat()
                 save_jobs(jobs)
                 assert fire_overdue_jobs(trigger) == 0
-                # Exercise the actual native ManagedPopen TTL (60s), not a
+                # Exercise the configured native ManagedPopen TTL (60s), not a
                 # substituted provider, edited ledger deadline, or mocked clock.
                 assert future.result(timeout=70)
                 expired = next(r for r in client.call("status")["jobs"]

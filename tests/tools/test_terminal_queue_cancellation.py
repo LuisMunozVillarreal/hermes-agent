@@ -10,6 +10,7 @@ from tests.agent.test_isolated_queue_integration import (
 )
 
 queue_home = _queue_home
+pytestmark = pytest.mark.platforms("linux")
 
 
 @pytest.mark.parametrize("path,cause", [
