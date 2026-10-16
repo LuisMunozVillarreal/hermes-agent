@@ -11,6 +11,10 @@ class WorkloadUnavailable(RuntimeError):
     """Required protection cannot authorize this execution."""
 
 
+class WorkloadCancelled(WorkloadUnavailable):
+    """Admission cancelled with no remaining owned execution."""
+
+
 class WorkloadProvider(ABC):
     """Versioned execution-owner contract; a ticket is never authorization.
 
@@ -33,7 +37,13 @@ class WorkloadProvider(ABC):
     supported_kinds = frozenset()
 
     def popen(self, kind, args, *, config, **kwargs):
-        """Own launch and lifetime; return a Popen-compatible handle, never a lease."""
+        """Own launch and lifetime; return a Popen-compatible handle, never a lease.
+
+        Explicit ``cancel_event`` support opts into an is_set() token that may
+        include the originating tool deadline. Raise InterruptedError only after
+        cancellation has verified no remaining execution. Uncertain cleanup is
+        an ordinary launch error, never a successful cancellation receipt.
+        """
         raise WorkloadUnavailable(f"unsupported workload execution: {kind}")
 
     def request_growth(self, lease, peak_memory_bytes, *, retained_memory_bytes=None, config):

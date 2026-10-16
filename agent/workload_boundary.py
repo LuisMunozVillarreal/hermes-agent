@@ -1,7 +1,7 @@
 """Generic execution-owner selection; no scheduler policy or inline fallback."""
 
 import subprocess
-from agent.workload_provider import WorkloadUnavailable
+from agent.workload_provider import WorkloadCancelled, WorkloadUnavailable
 from agent.workload_registry import select_provider
 
 
@@ -64,8 +64,11 @@ def popen(kind, args, *, cancel_event=None, **kwargs):
     provider = select_provider(config)
     if provider is None:
         return subprocess.Popen(args, **kwargs)
+    if cancel_event is None and kind in {"terminal", "terminal-pty"}:
+        from agent.workload_cancellation import terminal_cancellation
+        cancel_event = terminal_cancellation()
     if cancel_event is not None and cancel_event.is_set():
-        raise WorkloadUnavailable("workload launch cancelled")
+        raise WorkloadCancelled("workload launch cancelled")
     if kind not in provider.supported_kinds:
         raise WorkloadUnavailable(f"unsupported workload execution: {kind}")
     try:
@@ -82,5 +85,7 @@ def popen(kind, args, *, cancel_event=None, **kwargs):
             kwargs["commissioning_context"] = capture_commissioning()
         from agent.workload_estimates import current_estimate
         return provider.popen(kind, args, config=config, **current_estimate(kind), **kwargs)
+    except InterruptedError as exc:
+        raise WorkloadCancelled("workload launch cancelled") from exc
     except Exception as exc:
         raise WorkloadUnavailable("workload execution-owner launch failed") from exc

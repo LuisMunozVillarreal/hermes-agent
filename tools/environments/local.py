@@ -1068,8 +1068,9 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        from agent.workload_cancellation import terminal_cancellation
         proc = popen(
-            "terminal", args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            "terminal", args, cancel_event=terminal_cancellation(timeout), text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
