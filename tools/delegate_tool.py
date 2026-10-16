@@ -216,11 +216,21 @@ def _build_child_agent(
     routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    estimated_peak_memory_mb: Optional[int] = None,
+    estimated_retained_memory_mb: Optional[int] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
+    from agent.workload_estimates import estimate_bytes
+    memory = estimate_bytes(estimated_peak_memory_mb, estimated_retained_memory_mb)
+    from agent.workload_boundary import execution_provider
+    managed = execution_provider("delegation")
     import uuid as _uuid
     from run_agent import AIAgent
+    if managed is not None:
+        from functools import partial
+        from agent.isolated_agent import IsolatedAgent
+        AIAgent = partial(IsolatedAgent, kind="delegation", workload_estimate=memory)
     from agent.delegation_context import delegated_child_context
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
@@ -268,7 +278,7 @@ def _build_child_agent(
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
-    child_session_db = _open_child_session_db(parent_agent)
+    child_session_db = None if managed is not None else _open_child_session_db(parent_agent)
     with delegated_child_context():
         try:
             child = AIAgent(
@@ -314,7 +324,7 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(
+    child_pool = None if managed is not None else _resolve_child_credential_pool(
         rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
     )
     if child_pool is not None:
@@ -434,6 +444,8 @@ def _build_children(
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                **{key: t[key] for key in ("estimated_peak_memory_mb", "estimated_retained_memory_mb")
+                   if t.get(key) is not None},
             )
         except ValueError as exc:
             return [], str(exc)
@@ -486,6 +498,8 @@ def delegate_task(
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[dict[str, Any]] = None,
+    estimated_peak_memory_mb: Optional[int] = None,
+    estimated_retained_memory_mb: Optional[int] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -499,6 +513,13 @@ def delegate_task(
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+
+    from agent.workload_boundary import execution_provider
+    from agent.workload_provider import WorkloadUnavailable
+    try:
+        execution_provider("delegation")
+    except WorkloadUnavailable as exc:
+        return tool_error(str(exc))
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -548,6 +569,18 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
+    from agent.workload_estimates import validate_estimates, PEAK_FIELD, RETAINED_FIELD
+    try:
+        validate_estimates(estimated_peak_memory_mb, estimated_retained_memory_mb)
+        task_list = [dict(task) for task in task_list]
+        for task in task_list:
+            for key, value in ((PEAK_FIELD, estimated_peak_memory_mb),
+                               (RETAINED_FIELD, estimated_retained_memory_mb)):
+                if key not in task and value is not None:
+                    task[key] = value
+            validate_estimates(task.get(PEAK_FIELD), task.get(RETAINED_FIELD))
+    except ValueError as exc:
+        return tool_error(str(exc))
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
@@ -688,6 +721,8 @@ def _build_dynamic_schema_overrides() -> dict:
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
 
+from agent.workload_estimates import memory_schema
+
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     # description / tasks.description are placeholders: the real text is built per get_definitions() call by
@@ -710,6 +745,8 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
+                        "estimated_peak_memory_mb": memory_schema(),
+                        "estimated_retained_memory_mb": memory_schema(retained=True),
                         "goal": _p(
                             "string",
                             "What this subagent should accomplish. Be specific and self-contained — it knows "
@@ -801,6 +838,8 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
+        estimated_peak_memory_mb=args.get("estimated_peak_memory_mb"),
+        estimated_retained_memory_mb=args.get("estimated_retained_memory_mb"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

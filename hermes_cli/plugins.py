@@ -107,6 +107,8 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: set[str] = {
+    # Factories returning async context managers; gateway owns entry/exit and failures are fatal.
+    "gateway_lifespan",
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
@@ -205,7 +207,7 @@ VALID_HOOKS: set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "gateway_lifespan"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -1018,6 +1020,10 @@ class PluginContext:
 # the displaced entry. Rows: (method, kind, registry module, base-class module:attr, label, docstring,
 # options). ``normalize``: ``strip`` (default), ``lower`` (strip+lowercase) or ``None`` (raw name).
 _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
+    ("register_workload_provider", "workload_provider", "agent.workload_registry",
+     "agent.workload_provider:WorkloadProvider", "workload provider",
+     "Register a versioned fail-closed workload provider for the current profile.",
+     {"normalize": None}),
     ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
      "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "
@@ -1064,36 +1070,11 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
 )
 
-_NAME_NORMALIZERS: dict[Optional[str], Optional[Callable[[str], str]]] = {
-    "strip": lambda n: n.strip(), "lower": lambda n: n.strip().lower(), None: None,
-}
-
-
-def _make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
-    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row."""
-    base_mod, base_attr = base_ref.split(":")
-    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
-    register_name = options.get("register")
-
-    def register(self, provider) -> Optional[PluginRegistration]:
-        registry = importlib.import_module(registry_mod)
-        return self._register_scoped_provider(
-            provider, kind=kind, base_class=getattr(importlib.import_module(base_mod), base_attr),
-            registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
-            register=getattr(registry, register_name) if register_name else None,
-            reject_message=options.get("reject_message"),
-        )
-
-    def register_source(self, source) -> Optional[PluginRegistration]:  # secret sources: ``source``
-        return register(self, source)
-
-    method = register_source if options.get("param") == "source" else register
-    method.__name__, method.__qualname__, method.__doc__ = method_name, f"PluginContext.{method_name}", doc
-    return _serialized_replacement(method)
+from hermes_cli.plugins_provider_registrars import make_scoped_provider_registrar
 
 
 for _row in _SCOPED_PROVIDER_REGISTRARS:
-    setattr(PluginContext, _row[0], _make_scoped_provider_registrar(*_row))
+    setattr(PluginContext, _row[0], make_scoped_provider_registrar(*_row))
 del _row
 
 

@@ -104,6 +104,10 @@ def _field(job: dict, key: str) -> str:
     return (job.get(key) or "").strip()
 
 
+from cron.workload_estimates import with_job_script_estimates
+
+
+@with_job_script_estimates
 def _run_monitor_source(job: dict) -> tuple[bool, str]:
     """Run the job's monitor source (script or URL). Returns (ok, output)."""
     monitor_script = _field(job, "monitor_script")

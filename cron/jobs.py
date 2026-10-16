@@ -1836,6 +1836,8 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    estimated_peak_memory_mb: Optional[int] = None,
+    estimated_retained_memory_mb: Optional[int] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1847,6 +1849,8 @@ def create_job(
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
+    from agent.workload_estimates import validate_estimates
+    validate_estimates(estimated_peak_memory_mb, estimated_retained_memory_mb)
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1934,6 +1938,8 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+        ("estimated_peak_memory_mb", estimated_peak_memory_mb),
+        ("estimated_retained_memory_mb", estimated_retained_memory_mb),
     ):
         if value is not None:
             job[key] = value
@@ -2120,6 +2126,9 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
+        from agent.workload_estimates import validate_estimates, PEAK_FIELD, RETAINED_FIELD
+        if {PEAK_FIELD, RETAINED_FIELD}.intersection(updates):
+            validate_estimates(updated.get(PEAK_FIELD), updated.get(RETAINED_FIELD))
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

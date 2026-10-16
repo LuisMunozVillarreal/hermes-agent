@@ -252,6 +252,9 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
     """Terminate a script tree, then fall back to the local process-group path."""
+    if getattr(proc, "_hermes_managed", False) is True:
+        proc.kill()
+        return
     if proc.poll() is not None:
         # Already reaped: kill_process_tree would log a spurious "no signal" warning.
         return
@@ -444,6 +447,8 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
+    from agent.workload_boundary import execution_provider, popen
+    managed = execution_provider("cron-script")
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
@@ -484,8 +489,10 @@ def _run_job_script(
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        proc = popen(
+            "cron-script", argv, cancel_event=cancel_event,
+            **({"stdin": subprocess.DEVNULL} if managed else {}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
         deadline = time.monotonic() + script_timeout
         while True:
@@ -550,6 +557,10 @@ def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.
     return thread
 
 
+from cron.workload_estimates import with_job_script_estimates
+
+
+@with_job_script_estimates
 def _run_job_script_with_claim_heartbeat(
     job: dict, script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,

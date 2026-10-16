@@ -2523,6 +2523,10 @@ class _FireAudit:
 
 
 
+from cron.workload_estimates import with_job_estimates
+
+
+@with_job_estimates
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
@@ -2542,6 +2546,15 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
+    from agent.workload_boundary import execution_provider
+    from agent.workload_provider import WorkloadUnavailable
+    try:
+        if job.get("no_agent"):
+            execution_provider("cron-script")
+        else:
+            execution_provider("cron-agent")
+    except WorkloadUnavailable as exc:
+        return False, "", "", str(exc)
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2575,9 +2588,15 @@ def run_job(
         model = setup.model
 
         # Open state.db only after every early-return gate has passed.
-        _session_db = _open_cron_session_db(job)
+        factory = AIAgent
+        if execution_provider("cron-agent") is not None:
+            from functools import partial
+            from agent.isolated_agent import IsolatedAgent
+            factory = partial(IsolatedAgent, kind="cron-agent")
+        else:
+            _session_db = _open_cron_session_db(job)
         agent = _construct_cron_agent(
-            AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
+            factory, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
@@ -3958,6 +3977,11 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
+                # Script-only workers never construct AIAgent (which normally
+                # discovers plugins). Load the adopted profile's execution owner
+                # before crossing any required workload launch boundary.
+                from hermes_cli.plugins import get_plugin_manager
+                get_plugin_manager().discover_and_load()
                 completed = run_one_job(job, adapters=None, loop=None, verbose=False)
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.

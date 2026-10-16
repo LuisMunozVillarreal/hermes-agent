@@ -1059,6 +1059,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        from agent.workload_boundary import execution_provider, popen
+        execution_provider("terminal")
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
@@ -1066,8 +1068,8 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+        proc = popen(
+            "terminal", args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
@@ -1087,6 +1089,10 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
+        if getattr(proc, "_hermes_managed", False) is True:
+            proc.kill()
+            proc.wait(timeout=5)
+            return
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
