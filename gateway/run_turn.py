@@ -2076,7 +2076,7 @@ class GatewayTurnMixin:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 
         # Keep human text separate from skills, sender metadata, and other model context.
-        # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
+        # STT contributes separately after inbound preparation, below.
         title_user_message = event.text or None
 
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
@@ -2138,7 +2138,7 @@ class GatewayTurnMixin:
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,
-            title_user_message=title_user_message,
+            title_user_message=self._title_text_with_transcripts(event, title_user_message),
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):

@@ -32,6 +32,34 @@ _VOICE_MODES = {"off", "voice_only", "all"}
 
 
 class GatewayVoiceMixin:
+    async def _enrich_inbound_voice(
+        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
+    ) -> str:
+        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+            message_text, audio_paths,
+        )
+        # Share the pending path's raw transcripts with titling, not the enriched model prompt.
+        event._gateway_pending_stt_transcripts = list(_successful_transcripts)
+        # Echo each successful transcript back immediately when configured so users can verify STT
+        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
+        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
+        if _successful_transcripts and self._should_echo_stt_transcripts():
+            _echo_adapter = self._delivery_adapter_for(source)
+            if _echo_adapter:
+                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
+        return message_text
+
+    def _title_text_with_transcripts(self, event: MessageEvent, original_text: Optional[str]) -> Optional[str]:
+        """Title the spoken request plus its pre-skill caption, without model-facing metadata."""
+        transcripts = getattr(event, "_gateway_pending_stt_transcripts", [])
+        if not transcripts:
+            return original_text
+        caption = original_text or ""
+        if caption.strip() == self._EMPTY_TEXT_PLACEHOLDER:
+            caption = ""
+        return "\n\n".join([*transcripts, caption]).strip()
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.

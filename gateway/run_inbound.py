@@ -1514,22 +1514,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
-    async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
-    ) -> str:
-        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
-        )
-        # Echo each successful transcript back immediately when configured so users can verify STT
-        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
-        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._delivery_adapter_for(source)
-            if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
-        return message_text
-
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> tuple[str, str]:
         """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
