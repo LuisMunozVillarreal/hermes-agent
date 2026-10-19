@@ -212,6 +212,9 @@ class GatewayInboundTranscriptionMixin:
         shown = {path for path, (_transcript, was_shown) in handed.items() if was_shown}
         clips: dict = {path: (transcript, transcript_note(transcript, path)) for path, (transcript, _s) in handed.items()}
         message_text, _ = await self._enrich_message_with_transcription(message_text, audio_paths, clips)
+        event._gateway_pending_stt_transcripts = [
+            transcript for transcript, _note in clips.values() if transcript is not None
+        ]
         # ``clips`` holds each clip once, in order (enrichment dedupes repeated paths and bytes).
         _successful_transcripts = [transcript for path, (transcript, _note) in clips.items()
                                    if transcript is not None and path not in shown]

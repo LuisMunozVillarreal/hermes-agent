@@ -2,13 +2,13 @@
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from agent import title_generator
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionEntry
 from gateway.turn_context import TurnContext
@@ -21,7 +21,10 @@ class _TurnObserved(BaseException):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("skills", [[], "alpha", ["alpha"], ["alpha", "beta"]])
-async def test_gateway_titles_original_request_without_changing_model_input(tmp_path, monkeypatch, skills):
+@pytest.mark.parametrize("input_kind", [
+    "text", "discord_voice", "voice", "captioned_voice", "pending_voice", "audio_attachment",
+])
+async def test_gateway_titles_original_request_without_changing_model_input(tmp_path, monkeypatch, skills, input_kind):
     question = "Why does my connection pool exhaust after a deployment?"
     names = [skills] if isinstance(skills, str) else skills
     payloads = {name: f"# {name}\n" + (f"Follow {name} procedures.\n" * 100) for name in names}
@@ -33,10 +36,25 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     source = SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="user", user_name="Example")
     event = MessageEvent(text=question, source=source, auto_skill=skills,
                          channel_context="[Discord channel context: synthetic metadata]")
+    expected_title_input = question
+    transcribe = Mock(return_value={"success": True, "transcript": question})
+    if input_kind != "text":
+        event.text = {
+            "discord_voice": GatewayRunner._EMPTY_TEXT_PLACEHOLDER,
+            "captioned_voice": "Please explain the attached recording.",
+        }.get(input_kind, "")
+        event.message_type = MessageType.AUDIO if input_kind == "audio_attachment" else MessageType.VOICE
+        audio_path = tmp_path / "voice.ogg"
+        audio_path.write_bytes(b"synthetic audio fixture")
+        event.media_urls = [str(audio_path)]
+        event.media_types = ["audio/ogg"]
+        monkeypatch.setattr("tools.transcription_tools.transcribe_audio", transcribe)
+        if input_kind == "captioned_voice":
+            expected_title_input = question + "\n\n" + event.text
     entry = SessionEntry(session_id="title-test", session_key="discord:title-test",
                          created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1))
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner.config = GatewayConfig()
+    runner.config = GatewayConfig(stt_transcribe_audio_attachments=True)
     runner.adapters = {}
     runner._get_proxy_url = lambda: None
     runner.hooks = SimpleNamespace(emit=AsyncMock())
@@ -73,7 +91,9 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
 
     def title_at_turn_start(db, sid, text, **kwargs):
         title_inputs.append(text)
-        title_generator.generate_title(text)
+        # Desktop paste previews remain separate from the gateway's spoken title input.
+        assert kwargs.get("title_preview") is None
+        title_generator.generate_title(text, title_preview=kwargs.get("title_preview"))
 
     monkeypatch.setattr(title_generator, "maybe_auto_title", title_at_turn_start)
     monkeypatch.setattr(title_generator, "call_llm", title_request)
@@ -99,21 +119,25 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     runner._run_agent_bind_turn_wiring = run_without_delivery
     runner._run_agent = runner._run_agent_inner
     try:
+        if input_kind == "pending_voice":
+            await runner._transcribe_pending_audio_event_once(event)
         with pytest.raises(_TurnObserved):
             await runner._handle_message_with_agent(event, source, entry.session_key, 1)
-        assert title_inputs == [question]
-        assert title_requests == [question]
+        assert title_inputs == [expected_title_input]
+        assert title_requests == [expected_title_input]
+        if input_kind != "text":
+            transcribe.assert_called_once()
         # Both independent per-turn carriers must survive the gateway/facade/loop
         # handoff: title text must not displace upstream memory author attribution.
         assert agent._turn_author == {"id": "user", "name": "Example", "is_bot": False}
         assert question in model_inputs[0]
-        for payload in payloads.values():
+        for payload in payloads.values() if input_kind != "pending_voice" else []:
             assert payload in model_inputs[0]
-        if skills:
+        if skills and input_kind == "text":
             assert model_inputs[0].index(question) > title_generator.MAX_TITLE_INPUT_CHARS
         stored = [row["content"] for row in db.get_messages(entry.session_id) if row["role"] == "user"]
         assert stored and question in stored[0]
-        for payload in payloads.values():
+        for payload in payloads.values() if input_kind != "pending_voice" else []:
             assert payload in stored[0]
         # The ordinary Discord metadata is still model-facing, too.
         assert model_inputs[0] != question
@@ -126,7 +150,6 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         # Relay metadata belongs to upstream's facade, while title input belongs
         # to the conversation prologue. Both must survive the same admission.
         from agent import relay_runtime
-        from unittest.mock import Mock
         begin_turn = Mock(wraps=relay_runtime.SESSION_COORDINATOR.begin_turn)
         monkeypatch.setattr(relay_runtime.SESSION_COORDINATOR, "begin_turn", begin_turn)
         metadata = {"source": "title-regression"}

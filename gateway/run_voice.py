@@ -48,6 +48,16 @@ def _is_legacy_voice_key(key: str) -> bool:
 
 
 class GatewayVoiceMixin:
+    def _title_text_with_transcripts(self, event: MessageEvent, original_text: Optional[str]) -> Optional[str]:
+        """Title the spoken request plus its pre-skill caption, without model-facing metadata."""
+        transcripts = getattr(event, "_gateway_pending_stt_transcripts", [])
+        if not transcripts:
+            return original_text
+        caption = original_text or ""
+        if caption.strip() == self._EMPTY_TEXT_PLACEHOLDER:
+            caption = ""
+        return "\n\n".join([*transcripts, caption]).strip()
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.
