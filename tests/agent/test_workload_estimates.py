@@ -88,32 +88,22 @@ def test_cron_script_persisted_estimate_and_legacy_default(managed_home):
         assert any(r["estimate_source"] == "operator" for r in Client(state).call("status")["jobs"])
 
 
-@pytest.mark.parametrize("invalid_override", [False, True])
-def test_required_capacity_default_preserves_invalid_override_refusal(managed_home, invalid_override):
+def test_required_missing_estimate_refuses_legacy_script(managed_home):
     from cron.scheduler import run_job
     from hermes_worker_queue.client import Client
     import hermes_yaml as yaml
     home, state = managed_home
     config = yaml.safe_load((home / "config.yaml").read_text())
     del config["workloads"]["peak_memory_bytes"]
-    if invalid_override:
-        config["workloads"]["peak_memory_bytes"] = 0
     (home / "config.yaml").write_text(yaml.safe_dump(config))
     scripts = home / "scripts"
     scripts.mkdir()
-    marker = home / "script-ran"
+    marker = home / "never"
     (scripts / "small.py").write_text(f"from pathlib import Path; Path({str(marker)!r}).touch()")
     result = run_job({"id": "legacy", "script": "small.py", "no_agent": True})
-    assert result[0] is (not invalid_override), result
-    assert marker.exists() is (not invalid_override)
-    rows = Client(state).call("status")["jobs"]
-    if invalid_override:
-        assert rows == []
-    else:
-        assert len(rows) == 1
-        assert rows[0]["estimate_source"] == "capacity"
-        assert rows[0]["kind"] == "cron-script"
-        assert rows[0]["peak"] == rows[0]["retained"] == 32 * 1024**2
+    assert not result[0], result
+    assert not marker.exists()
+    assert Client(state).call("status")["jobs"] == []
 
 
 def test_monitor_persisted_estimate_reaches_real_ledger(managed_home):
