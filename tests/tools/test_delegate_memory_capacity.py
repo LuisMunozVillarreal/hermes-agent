@@ -47,6 +47,8 @@ def test_unlimited_never_disables_legacy_protection(configured, mode, monkeypatc
         provider.memory_managed = False
     with pytest.raises(WorkloadUnavailable):
         delegate._get_max_concurrent_children()
+    with pytest.raises(WorkloadUnavailable):
+        delegate._get_max_async_children()
     import json
     from tools import async_delegation as ad
     monkeypatch.setattr(delegate, "_resolve_delegation_credentials", lambda *args: {})
@@ -99,6 +101,17 @@ def test_unlimited_parallel_batch_runs_all_children(configured, monkeypatch):
     results = []
     dispatch._run_children_parallel(batch, results, honor_parent_interrupt=True)
     assert [entry["task_index"] for entry in results] == [0, 1]
+
+
+def test_schema_reports_unlimited_configuration_when_admission_is_disabled(configured):
+    home, _ = configured
+    (home / "config.yaml").write_text("workloads:\n  mode: disabled\n")
+    description = delegate._build_dynamic_schema_overrides()["parameters"]["properties"]["tasks"]["description"]
+    assert "delegation.max_concurrent_children=0" in description
+    assert "required memory admission" in description
+    assert "up to 10" not in description
+    with pytest.raises(WorkloadUnavailable):
+        delegate._get_max_async_children()
 
 
 def test_positive_and_default_legacy_limits_stay_available(configured, monkeypatch):

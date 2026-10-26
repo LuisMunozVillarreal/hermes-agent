@@ -2213,10 +2213,10 @@ def _(rid, params: dict, session: dict) -> dict:
 # ── delegation / spawn trees ─────────────────────────────────────────
 @method("delegation.status")
 def _(rid, params: dict) -> dict:
-    from tools import delegate_tool as dt
+    from tools import delegate_tool as dt, delegate_tool_config as config
     return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),
                      "max_spawn_depth": dt._get_max_spawn_depth(),
-                     "max_concurrent_children": dt._get_max_concurrent_children()})
+                     "max_concurrent_children": config._get_configured_max_concurrent_children()})
 
 
 @method("delegation.pause")

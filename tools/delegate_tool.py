@@ -687,9 +687,11 @@ _DESCRIPTION_TAIL = (
 )
 
 def _build_tasks_param_description() -> str:
-    """Compose the 'tasks' parameter description with current concurrency limit."""
+    """Compose the 'tasks' parameter description with the configured concurrency limit."""
+    from tools.delegate_tool_config import _get_configured_max_concurrent_children
+
     try:
-        max_children = _get_max_concurrent_children()
+        max_children = _get_configured_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     if max_children == 0:

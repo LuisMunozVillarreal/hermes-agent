@@ -15,7 +15,7 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
-# One-shot guard: _get_max_concurrent_children() runs on every get_definitions()
+# One-shot guard: _get_configured_max_concurrent_children() runs on every get_definitions()
 # schema rebuild, so the >10 cost advisory would otherwise log on every turn.
 _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
@@ -104,14 +104,22 @@ def _require_memory_managed_delegation() -> None:
 
 
 def _get_max_concurrent_children() -> int:
+    """Execution cap; unlimited admission fails closed without a memory-managed owner."""
+    result = _get_configured_max_concurrent_children()
+    if result == 0:
+        _require_memory_managed_delegation()
+    return result
+
+
+def _get_configured_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 
-    Explicit integer zero opts into required memory-managed admission.
+    Report configuration without probing admission availability. Explicit integer
+    zero requests memory-managed admission; execution must use the validated getter.
     Other legacy values retain their floor of one.
     """
     configured = _cfg().get("max_concurrent_children")
     if type(configured) is int and configured == 0:
-        _require_memory_managed_delegation()
         return 0
     result = _knob(
         "max_concurrent_children", "DELEGATION_MAX_CONCURRENT_CHILDREN", lambda v: max(1, int(v)),
