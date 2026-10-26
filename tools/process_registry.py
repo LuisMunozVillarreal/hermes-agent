@@ -1203,6 +1203,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
         ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
+        from agent.workload_boundary import execution_provider, popen
+        managed = execution_provider("terminal")
+        if use_pty and managed:
+            from tools.process_registry_workloads import spawn_managed_pty
+            return spawn_managed_pty(self, command, task_id, owner_task_id, session_key, cwd, env_vars,
+                                     persist_on_release)
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1231,7 +1237,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_argv = ([_find_shell(), "-lic", f"set +m; {safe_command}"] if managed else
+                      self._scope_argv(session, safe_command, unit_suffix, "Local"))
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
@@ -1240,8 +1247,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
-        proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
+        proc = popen(
+            "terminal", spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True, **_popen_kwargs)
         session.process = proc
@@ -1253,21 +1260,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             self._reap_untracked(session, proc)
             raise
         return session
-
-    def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
-        """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
-        descendants) so nothing leaks untracked."""
-        with suppress(Exception):
-            if session.systemd_unit:
-                # Scope teardown is the authoritative cleanup for the worker cgroup;
-                # the systemd-run wrapper PID is terminated below as fallback.
-                _stop_systemd_unit(session.systemd_unit)
-            # _terminate_host_pid revalidates the kernel start time captured at
-            # spawn before signalling: pgid == pid would only prove the pid leads a
-            # group, and a reaped child can be recycled onto an unrelated leader.
-            self._terminate_host_pid(proc.pid, session.host_start_time)
-        with suppress(Exception):
-            proc.wait(timeout=5)
 
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
@@ -1296,6 +1288,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context. ``persist_on_release`` keeps the process out of
         agent-lifecycle kill sweeps (#41225)."""
+        from agent.workload_boundary import require_unmanaged_allowed
+        require_unmanaged_allowed("remote background execution")
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
@@ -2269,12 +2263,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
-        if session._pty:
+        if session._pty and getattr(session._pty, "_hermes_managed", False) is True:
+            session._pty.terminate(force=True)
+        elif session._pty:
             try:
                 session._pty.terminate(force=True)
             except Exception:
                 if session.pid:
                     os.kill(session.pid, signal.SIGTERM)
+        elif session.process and getattr(session.process, "_hermes_managed", False) is True:
+            session.process.kill()
         elif session.process:
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.

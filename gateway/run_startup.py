@@ -1595,9 +1595,18 @@ class GatewayStartupMixin:
 
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
+        from gateway.plugin_lifespan import start_plugin_lifespans, stop_plugin_lifespans
+        started = False
+        acquired = False
         try:
-            return await self._start_impl()
+            await start_plugin_lifespans(self)
+            acquired = True
+            result = await self._start_impl()
+            started = bool(result and getattr(self, "_running", False))
+            return result
         finally:
+            if acquired and not started:
+                await stop_plugin_lifespans(self)
             # Every startup path (early aborts included) ends here: bound startup on the latest
             # diagnostic snapshot once, instead of flushing at each return.
             await self._start_flush_runtime_status()

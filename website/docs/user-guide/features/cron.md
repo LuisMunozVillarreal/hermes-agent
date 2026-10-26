@@ -74,6 +74,38 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 
 Hermes will use the unified `cronjob_manage` tool internally.
 
+## Memory estimates for protected execution (experimental)
+
+If an operator has enabled a workload provider in `workloads.mode: required`,
+cron jobs can declare their execution memory budget through the normal create/edit
+interfaces:
+
+```bash
+hermes cron create "every 2h" --script collect.py --no-agent --paused \
+  --estimated-peak-memory-mb 64
+hermes cron edit JOB_ID --estimated-peak-memory-mb 768 \
+  --estimated-retained-memory-mb 400
+```
+
+The corresponding tool fields are `estimated_peak_memory_mb` and
+`estimated_retained_memory_mb` on create/update. Both use **positive integer MiB**
+(1 MiB = 1048576 bytes), despite the `_mb` name. Peak covers the entire process
+tree. Optional retained memory is the parent's portion while descendants run;
+it is included in the peak and cannot exceed it. Invalid values are rejected,
+not rounded or coerced.
+
+Estimates are stored with the job. Creating or editing a job does not reserve
+memory, run the job, or enable a paused job. Each fire supplies the stored estimate
+to its script and/or isolated agent launch, including monitor scripts. Admission,
+queueing and enforcement belong to the configured provider. Estimates alone do
+not enforce limits.
+
+Existing jobs are not automatically migrated. Before enabling protection, review
+and edit each affected job or explicitly configure the provider's operator-default
+policy. Required protection refuses a launch with neither a job estimate nor an
+approved default; it never silently falls back to unprotected execution. With
+protection disabled (the default), execution retains its normal upstream behavior.
+
 ## Pre-dispatch configuration validation
 
 Before constructing any agent machinery for a scheduled run, the scheduler

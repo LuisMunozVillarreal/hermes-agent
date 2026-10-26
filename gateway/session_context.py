@@ -170,6 +170,12 @@ def reset_session_vars() -> None:
     _runtime_cwd("clear_session_cwd")
 
 
+def get_scoped_session_id() -> str | None:
+    """Commissioning identity bound in this task, never another task's env fallback."""
+    value = _SESSION_ID.get()
+    return None if value is _UNSET or value == "" else value
+
+
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
     ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""

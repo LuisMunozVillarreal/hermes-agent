@@ -655,6 +655,9 @@ class BaseEnvironment(ABC):
         # The activity callback is thread-local and the wait runs on the
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
+        from agent.workload_cancellation import AdmissionCancellation, admission_scope
+        from agent.workload_provider import WorkloadCancelled
+        admission_cancel = AdmissionCancellation(effective_timeout)
         proc_holder: list = []
         output_holder: list = []
 
@@ -665,7 +668,13 @@ class BaseEnvironment(ABC):
                 return {"output": "[host is exiting: command not started]", "returncode": 130}
             spawned = None
             try:
-                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+                with admission_scope(admission_cancel):
+                    spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            except WorkloadCancelled:
+                if admission_cancel.expired():
+                    return {"output": "[Command timed out during admission]", "returncode": 124,
+                            "hermes_timed_out": True}
+                return {"output": "[Command interrupted during admission]", "returncode": 130}
             finally:
                 fenced = _leave_foreground_spawn(self, spawned)
             proc_holder.append(spawned)
@@ -683,6 +692,7 @@ class BaseEnvironment(ABC):
                     _live_foreground.pop(id(spawned), None)
 
         def _on_timeout() -> None:
+            admission_cancel.set()
             if proc_holder:
                 self._kill_spawned_tree(proc_holder[0])
 
