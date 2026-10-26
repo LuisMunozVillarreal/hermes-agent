@@ -142,7 +142,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
-    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
+    if batch.max_children == 0:
+        from tools.delegate_tool_config import _require_memory_managed_delegation
+        _require_memory_managed_delegation()
+    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children or n_here)
     # ``with`` would join every worker on exit, so a child wedged in an
     # uninterruptible call defeats the interrupt fast-path: the poll loop marks
     # it interrupted and returns, then the join hangs forever. Shutdown without

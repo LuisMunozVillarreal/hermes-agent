@@ -561,7 +561,10 @@ def delegate_task(
         # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
         # spawn loudly (#80450).
         return tool_error(str(exc))
-    max_children = _get_max_concurrent_children()
+    try:
+        max_children = _get_max_concurrent_children()
+    except WorkloadUnavailable as exc:
+        return tool_error(str(exc))
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
@@ -689,6 +692,13 @@ def _build_tasks_param_description() -> str:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    if max_children == 0:
+        return (
+            "The task(s), with running concurrency governed by required memory admission "
+            "and the provider's configured waiting/running limits. No delegation count cap "
+            "(delegation.max_concurrent_children=0). Each entry spawns one isolated subagent; "
+            "a single task is a one-entry array. Required when spawning."
+        )
     return (
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "

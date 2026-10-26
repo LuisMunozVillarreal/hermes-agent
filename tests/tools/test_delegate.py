@@ -1589,12 +1589,6 @@ class TestConcurrencyDefaults(unittest.TestCase):
                 self.assertEqual(_get_max_concurrent_children(), 50)
 
 
-    @patch("tools.delegate_tool._load_config",
-           return_value={"max_concurrent_children": 0})
-    def test_zero_clamped_to_one(self, mock_cfg):
-        """Floor of 1 is enforced; zero or negative values raise to 1."""
-        self.assertEqual(_get_max_concurrent_children(), 1)
-
 class TestAsyncCapUnified(unittest.TestCase):
     """max_async_children is deprecated: the async cap IS max_concurrent_children."""
 

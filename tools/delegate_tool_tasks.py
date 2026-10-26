@@ -78,7 +78,7 @@ def _normalize_task_list(
         tasks = None
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
+        if max_children and len(tasks) > max_children:
             return None, (
                 f"Too many tasks: {len(tasks)} provided, but max_concurrent_children is {max_children}. "
                 f"Either reduce the task count, split into multiple delegate_task calls, or increase "

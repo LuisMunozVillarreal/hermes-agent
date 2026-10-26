@@ -90,11 +90,29 @@ def _get_oneshot_max_children() -> int:
     )
 
 
+def _require_memory_managed_delegation() -> None:
+    """Zero count limits require the selected execution owner, never config alone."""
+    from agent.workload_boundary import execution_provider
+    from agent.workload_provider import WorkloadUnavailable
+
+    provider = execution_provider("delegation")
+    if provider is None or getattr(provider, "memory_managed", False) is not True:
+        raise WorkloadUnavailable(
+            "Unlimited delegation requires workloads.mode=required and a "
+            "memory-managed delegation provider"
+        )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 
-    Floor of 1 is the only bound enforced; there is no ceiling.
+    Explicit integer zero opts into required memory-managed admission.
+    Other legacy values retain their floor of one.
     """
+    configured = _cfg().get("max_concurrent_children")
+    if type(configured) is int and configured == 0:
+        _require_memory_managed_delegation()
+        return 0
     result = _knob(
         "max_concurrent_children", "DELEGATION_MAX_CONCURRENT_CHILDREN", lambda v: max(1, int(v)),
         _DEFAULT_MAX_CONCURRENT_CHILDREN,
