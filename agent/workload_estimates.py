@@ -55,7 +55,8 @@ def memory_schema(*, retained=False):
         "Parent process memory retained while descendants run, included in (not added to) "
         "estimated_peak_memory_mb. Must not exceed peak. " if retained else
         "Estimated peak memory for this execution's whole process tree, including parent "
-        "and descendants. Required with protection unless an operator default is configured. "
+        "and descendants. If omitted, the provider must supply a configured or "
+        "capacity-derived default. "
     )
     return {"type": "integer", "minimum": 1, "maximum": MAX_MEMORY_MIB,
             "description": description + "Positive integer MiB (1 MiB = 1048576 bytes)."}
