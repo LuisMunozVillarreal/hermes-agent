@@ -1,5 +1,6 @@
 """Control-plane proxy for an AIAgent constructed only inside its owned process."""
 import os
+import logging
 import contextvars
 import threading
 from pathlib import Path
@@ -11,6 +12,9 @@ import tempfile
 import uuid
 
 from agent.isolated_protocol import AgentConstruction, DELEGATION_FIELDS, check_peer, receive
+from agent.isolated_diagnostics import ChannelDisconnected, failure_reason, worker_status
+
+logger = logging.getLogger(__name__)
 
 
 class IsolatedAgent:
@@ -70,6 +74,8 @@ class IsolatedAgent:
                     return self._cancelled_result()
                 self._finished = False
                 self._generation = secrets.token_hex(32)
+                # Independent of the authentication nonce and private session IDs.
+                self._diagnostic_id = uuid.uuid4().hex
                 self._channel = None
                 self.process = None
                 self._activity = {}
@@ -126,6 +132,7 @@ class IsolatedAgent:
         from agent.isolated_routing import profile_environment
         options = dict(stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        cwd=str(Path(__file__).resolve().parents[1]), env=profile_environment(self._profile_context))
+        phase = 'launch'
         try:
             if self._launcher is None:
                 from agent.workload_boundary import popen
@@ -141,6 +148,7 @@ class IsolatedAgent:
                     process.terminate()
                     raise RuntimeError("agent launch cancelled")
             lease = getattr(self.process, 'workload_lease', None)
+            phase = 'bootstrap'
             if self._launcher is None or lease is not None:
                 from agent.workload_provider import WorkloadLease
                 lease = WorkloadLease(**(lease or {})).to_dict()
@@ -175,6 +183,7 @@ class IsolatedAgent:
                     raise RuntimeError('agent bootstrap cancelled')
                 self._channel = Channel(self._socket, token,
                     lambda op, payload: self._turn_event(token, op, payload))
+            phase = 'run'
             return self._channel.call('run', {'request': self.request.to_dict(),
                 'profile_context': self._profile_context,
                 'commissioning_context': self._commissioning_context,
@@ -186,12 +195,37 @@ class IsolatedAgent:
                 'metadata': {key: getattr(self, key) for key in DELEGATION_FIELDS if hasattr(self, key)},
                 'run_options': kwargs, 'stream': stream_callback is not None,
                 'user_message': user_message, 'task_id': task_id}, timeout=None)
-        except (RuntimeError, OSError, EOFError):
-            if not self._interrupt_requested:
-                raise
-            return {'interrupted': True, 'completed': False, 'final_response': '', 'messages': []}
+        except (RuntimeError, OSError, EOFError, ValueError, TypeError) as exc:
+            return self._handle_run_failure(phase, exc)
         finally:
             listener.close()
+
+    def _handle_run_failure(self, phase, exc):
+        # Separate from _run_turn to keep its cyclomatic complexity within the
+        # code-health ratchet: a unit already over the limit may only shrink.
+        if self._interrupt_requested:
+            return self._cancelled_result()
+        if phase != 'run' or isinstance(exc, ChannelDisconnected):
+            report = self._failure_report(phase, exc)
+            if report is None:
+                return self._cancelled_result()
+            if isinstance(exc, ChannelDisconnected):
+                raise ChannelDisconnected(report) from None
+        raise
+
+    def _failure_report(self, phase, exc):
+        # Observe exit before close() can terminate a still-running worker. A
+        # live worker here is not evidence of a crash, OOM or scheduler action.
+        status = worker_status(self.process)
+        with self._state_lock:
+            if self._interrupt_requested:
+                return None
+            reason = (self._channel.disconnect_reason or 'agent control connection lost: local close'
+                      if self._channel is not None else failure_reason(exc))
+            report = (f'isolated agent failure diagnostic_id={self._diagnostic_id} '
+                      f'phase={phase} {status} reason={reason}')
+            logger.warning('%s', report)
+            return report
 
     def _handle_event(self, op, payload):
         generation = self._event_generation.get()
