@@ -1,4 +1,8 @@
 """Private executable worker. No pickle, live parent agents or DB handles."""
+# PM may exec a selected runtime. Finish that before consuming the one-shot
+# bootstrap token or opening the authenticated control connection.
+import hermes_bootstrap  # noqa: F401
+
 import socket
 import sys
 
