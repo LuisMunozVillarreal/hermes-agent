@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -24,6 +25,48 @@ _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session
 # Rounds whose visible line is the turn's reply if the follow-up is empty (no empty-response nudge):
 # housekeeping, and setup_beat, whose card already blocked for the user's answer.
 _LINE_IS_REPLY_TOOLS = _HOUSEKEEPING_TOOLS | {"setup_beat"}
+
+
+def _counts_toward_delegate_cap(tool_call: Any) -> bool:
+    if tool_call.function.name != "delegate_task":
+        return False
+    from tools.delegate_tool_registry import _CONTROL_ACTIONS
+
+    try:
+        args = json.loads(tool_call.function.arguments)
+    except (TypeError, ValueError):
+        return True
+    action = args.get("action") if isinstance(args, dict) else None
+    return not (isinstance(action, str) and action.strip().lower() in _CONTROL_ACTIONS)
+
+
+def cap_delegate_task_calls(tool_calls: list) -> list:
+    """Cap spawn calls only; zero needs memory admission, controls never consume slots."""
+    from agent.workload_provider import WorkloadUnavailable
+    from tools.delegate_tool import _get_max_concurrent_children
+
+    counted = [_counts_toward_delegate_cap(tc) for tc in tool_calls]
+    delegate_count = sum(counted)
+    if not delegate_count:
+        return tool_calls
+    try:
+        max_children = _get_max_concurrent_children()
+    except WorkloadUnavailable:
+        # delegate_task rejects unsafe spawns at execution. Do not abort unrelated
+        # tools or hide list/steer/stop when the execution owner is unavailable.
+        return tool_calls
+    if max_children == 0 or delegate_count <= max_children:
+        return tool_calls
+    kept_delegates, truncated = 0, []
+    for tc, counts in zip(tool_calls, counted):
+        if counts:
+            if kept_delegates >= max_children:
+                continue
+            kept_delegates += 1
+        truncated.append(tc)
+    logger.warning("Truncated %d excess delegate_task call(s) to enforce "
+                   "max_concurrent_children=%d limit", delegate_count - max_children, max_children)
+    return truncated
 
 
 @dataclass

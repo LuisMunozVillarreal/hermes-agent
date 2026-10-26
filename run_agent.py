@@ -1170,25 +1170,7 @@ class AIAgent(
 
     _drop_thinking_only_and_merge_users = _forward_static("agent.agent_runtime_helpers", "drop_thinking_only_and_merge_users")
 
-    @staticmethod
-    def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Cap delegate_task calls in one turn at max_concurrent_children (non-delegate calls all kept);
-        returns the original list when nothing was truncated."""
-        from tools.delegate_tool import _get_max_concurrent_children
-        max_children = _get_max_concurrent_children()
-        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
-        if delegate_count <= max_children:
-            return tool_calls
-        kept_delegates, truncated = 0, []
-        for tc in tool_calls:
-            if tc.function.name == "delegate_task":
-                if kept_delegates >= max_children:
-                    continue
-                kept_delegates += 1
-            truncated.append(tc)
-        logger.warning("Truncated %d excess delegate_task call(s) to enforce "
-                       "max_concurrent_children=%d limit", delegate_count - max_children, max_children)
-        return truncated
+    _cap_delegate_task_calls = _forward_static("agent.turn_tool_round", "cap_delegate_task_calls")
 
     @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
