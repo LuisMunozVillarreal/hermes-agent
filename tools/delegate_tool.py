@@ -572,7 +572,7 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
-    from agent.workload_estimates import validate_estimates, validate_model_estimates, PEAK_FIELD, RETAINED_FIELD
+    from agent.workload_estimates import validate_estimates, PEAK_FIELD, RETAINED_FIELD
     try:
         validate_estimates(estimated_peak_memory_mb, estimated_retained_memory_mb)
         task_list = [dict(task) for task in task_list]
@@ -581,8 +581,8 @@ def delegate_task(
                                (RETAINED_FIELD, estimated_retained_memory_mb)):
                 if key not in task and value is not None:
                     task[key] = value
-            validate_model_estimates("delegation", task.get(PEAK_FIELD), task.get(RETAINED_FIELD))
-    except (ValueError, WorkloadUnavailable) as exc:
+            validate_estimates(task.get(PEAK_FIELD), task.get(RETAINED_FIELD))
+    except ValueError as exc:
         return tool_error(str(exc))
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
@@ -845,11 +845,37 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
 
-registry.register(
-    name="delegate_task",
-    toolset="delegation",
-    schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
+def _model_estimate_error(args: dict) -> Optional[str]:
+    """Validate model spawns at both dispatch entries, not trusted /review calls."""
+    from agent.workload_estimates import PEAK_FIELD, RETAINED_FIELD, validate_model_estimates
+    from agent.workload_provider import WorkloadUnavailable
+
+    if (args.get("action") or "").strip().lower() in _CONTROL_ACTIONS:
+        return None
+    # Reuse task recovery (including JSON strings and tasks=[] + goal) so no
+    # accepted spawn shape can bypass the model-only requirement.
+    tasks, error = _normalize_task_list(
+        args.get("goal"), args.get("context"), args.get("tasks"),
+        args.get("output_schema"), _normalize_role(args.get("role")), 0,
+    )
+    if error:
+        return error
+    try:
+        for task in tasks:
+            validate_model_estimates(
+                "delegation", task.get(PEAK_FIELD, args.get(PEAK_FIELD)),
+                task.get(RETAINED_FIELD, args.get(RETAINED_FIELD)),
+            )
+    except (ValueError, WorkloadUnavailable) as exc:
+        return str(exc)
+    return None
+
+
+def _delegate_task_handler(args: dict, **kw) -> str:
+    error = _model_estimate_error(args)
+    if error:
+        return tool_error(error)
+    return delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
@@ -857,7 +883,14 @@ registry.register(
         parent_agent=kw.get("parent_agent"),
         estimated_peak_memory_mb=args.get("estimated_peak_memory_mb"),
         estimated_retained_memory_mb=args.get("estimated_retained_memory_mb"),
-    ),
+    )
+
+
+registry.register(
+    name="delegate_task",
+    toolset="delegation",
+    schema=DELEGATE_TASK_SCHEMA,
+    handler=_delegate_task_handler,
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

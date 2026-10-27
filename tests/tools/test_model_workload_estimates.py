@@ -19,6 +19,7 @@ def managed(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(
         "workloads:\n  mode: required\n  provider: estimate-fixture\n"
         "  peak_memory_bytes: 4294967296\n"
+        "  retained_memory_bytes: 2147483648\n"
     )
     provider = SimpleNamespace(
         name="estimate-fixture",
@@ -51,10 +52,109 @@ def managed(tmp_path, monkeypatch):
     return tmp_path, provider
 
 
-@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_review_uses_operator_defaults_with_required_managed_provider(
+    managed, monkeypatch
+):
+    from agent.review_engine import start_review
+    from agent.workload_boundary import execution_provider
+
+    home, provider = managed
+    builds = []
+
+    def intercept(**kwargs):
+        builds.append(kwargs)
+        raise ValueError("review child construction reached")
+
+    monkeypatch.setattr(delegate_tool, "_build_child_agent", intercept)
+    assert execution_provider("delegation") is provider
+    with pytest.raises(ValueError, match="^review child construction reached$"):
+        start_review(
+            _agent(home), [{"role": "assistant", "content": "Review this diff."}]
+        )
+    assert len(builds) == 1
+    assert builds[0].get("estimated_peak_memory_mb") is None
+    assert builds[0].get("estimated_retained_memory_mb") is None
+
+
+def test_review_defaults_reach_execution_owner(managed):
+    from agent.review_engine import start_review
+    from agent.workload_provider import WorkloadUnavailable
+
+    home, provider = managed
+    admissions = []
+
+    def refuse(kind, args, *, config, **kwargs):
+        admissions.append((kind, config, kwargs))
+        raise WorkloadUnavailable("fixture admission stopped")
+
+    provider.popen = refuse
+    result = start_review(
+        _agent(home), [{"role": "assistant", "content": "Review this diff."}]
+    )
+    assert result["results"][0]["status"] == "error"
+    assert len(admissions) == 1
+    kind, config, options = admissions[0]
+    assert kind == "delegation"
+    assert config["peak_memory_bytes"] == 4096 * 1024**2
+    assert config["retained_memory_bytes"] == 2048 * 1024**2
+    assert options.get("peak_memory_bytes") is None
+    assert options.get("retained_memory_bytes") is None
+
+
+@pytest.mark.parametrize("entry", ["registry", "live"])
+@pytest.mark.parametrize("action", ["list", "steer", "stop"])
+def test_model_controls_do_not_require_estimates(managed, entry, action):
+    agent = _agent(managed[0])
+    args = {"action": action}
+    result = json.loads(
+        agent._dispatch_delegate_task(args)
+        if entry == "live"
+        else registry.dispatch("delegate_task", args, parent_agent=agent)
+    )
+    if action == "list":
+        assert "error" not in result
+    else:
+        assert "subagent_id" in result["error"]
+    assert "estimated_peak_memory_mb" not in result.get("error", "")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"goal": "fixture"},
+        {"tasks": [{"goal": "fixture"}]},
+        {"tasks": json.dumps([{"goal": "fixture"}])},
+        {"goal": "fixture", "tasks": []},
+        {
+            "tasks": [
+                {"goal": "valid sibling", "estimated_peak_memory_mb": 256},
+                {"goal": "missing peak"},
+            ]
+        },
+        {
+            "estimated_peak_memory_mb": 256,
+            "tasks": [{"goal": "null override", "estimated_peak_memory_mb": None}],
+        },
+        {
+            "goal": "spoofed internal caller",
+            "credentials_cfg": {},
+            "_model_submission": False,
+            "background": False,
+        },
+    ],
+    ids=[
+        "single",
+        "batch",
+        "json-batch",
+        "empty-batch",
+        "mixed-batch",
+        "null-override",
+        "spoof",
+    ],
+)
 @pytest.mark.parametrize("entry", ["registry", "live"])
 def test_delegation_missing_peak_refuses_before_child_construction(
-    managed, monkeypatch, shape, entry
+    managed, monkeypatch, args, entry
 ):
     home, _ = managed
     agent = _agent(home)
@@ -65,9 +165,6 @@ def test_delegation_missing_peak_refuses_before_child_construction(
         raise AssertionError("child construction reached")
 
     monkeypatch.setattr(delegate_tool, "_build_child_agent", reject)
-    args = (
-        {"goal": "fixture"} if shape == "single" else {"tasks": [{"goal": "fixture"}]}
-    )
     result = json.loads(
         agent._dispatch_delegate_task(args)
         if entry == "live"
