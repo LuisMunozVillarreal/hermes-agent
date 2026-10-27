@@ -61,9 +61,8 @@ def test_concurrent_estimates_do_not_leak_or_become_environment(managed_home):
     assert all(r["estimate_source"] == "job" for r in rows)
     run_default = json.loads(_handle_terminal({"command": "printf default", "workdir": str(home)},
                                              task_id="default-after-concurrent"))
-    assert not run_default.get("error"), run_default
-    rows = Client(state).call("status")["jobs"]
-    assert any(r["peak"] == 64 * 1024**2 and r["estimate_source"] == "operator" for r in rows)
+    assert "estimated_peak_memory_mb is required" in run_default["error"]
+    assert Client(state).call("status")["jobs"] == rows
 
 
 def test_cron_script_persisted_estimate_and_legacy_default(managed_home):

@@ -572,7 +572,7 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
-    from agent.workload_estimates import validate_estimates, PEAK_FIELD, RETAINED_FIELD
+    from agent.workload_estimates import validate_estimates, validate_model_estimates, PEAK_FIELD, RETAINED_FIELD
     try:
         validate_estimates(estimated_peak_memory_mb, estimated_retained_memory_mb)
         task_list = [dict(task) for task in task_list]
@@ -581,8 +581,8 @@ def delegate_task(
                                (RETAINED_FIELD, estimated_retained_memory_mb)):
                 if key not in task and value is not None:
                     task[key] = value
-            validate_estimates(task.get(PEAK_FIELD), task.get(RETAINED_FIELD))
-    except ValueError as exc:
+            validate_model_estimates("delegation", task.get(PEAK_FIELD), task.get(RETAINED_FIELD))
+    except (ValueError, WorkloadUnavailable) as exc:
         return tool_error(str(exc))
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
@@ -718,6 +718,11 @@ def _build_dynamic_schema_overrides() -> dict:
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+    from agent.workload_estimates import model_required_fields
+    tasks = overrides_params["properties"]["tasks"]
+    tasks["items"] = {**tasks["items"], "required": model_required_fields(
+        "delegation", tasks["items"]["required"],
+    )}
 
     if not independent_completions:
         tasks = overrides_params["properties"]["tasks"]
@@ -757,7 +762,7 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "estimated_peak_memory_mb": memory_schema(),
+                        "estimated_peak_memory_mb": memory_schema(model_created=True),
                         "estimated_retained_memory_mb": memory_schema(retained=True),
                         "goal": _p(
                             "string",

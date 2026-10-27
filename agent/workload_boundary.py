@@ -1,7 +1,7 @@
 """Generic execution-owner selection; no scheduler policy or inline fallback."""
 
 import subprocess
-from agent.workload_provider import WorkloadCancelled, WorkloadUnavailable
+from agent.workload_provider import WorkloadCancelled, WorkloadUnavailable, WorkloadValidationError
 from agent.workload_registry import select_provider
 
 
@@ -85,6 +85,8 @@ def popen(kind, args, *, cancel_event=None, **kwargs):
             kwargs["commissioning_context"] = capture_commissioning()
         from agent.workload_estimates import current_estimate
         return provider.popen(kind, args, config=config, **current_estimate(kind), **kwargs)
+    except WorkloadValidationError:
+        raise
     except InterruptedError as exc:
         raise WorkloadCancelled("workload launch cancelled") from exc
     except Exception as exc:

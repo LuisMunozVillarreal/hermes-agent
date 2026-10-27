@@ -11,6 +11,33 @@ class WorkloadUnavailable(RuntimeError):
     """Required protection cannot authorize this execution."""
 
 
+class WorkloadValidationError(WorkloadUnavailable, ValueError):
+    """Safe pre-launch diagnostics: fixed reasons and validated numeric values only."""
+
+    def __init__(self, reason, *, peak_memory_bytes=None, retained_memory_bytes=None):
+        messages = {
+            "missing-peak": (
+                "estimated_peak_memory_mb is required for agent-created work under "
+                "memory-managed admission; estimate the whole process-tree peak."
+            ),
+            "retained-exceeds-peak": (
+                "retained_memory_bytes must not exceed peak_memory_bytes; lower retained "
+                "or increase the whole-subtree peak estimate."
+            ),
+        }
+        message = messages.get(reason, (
+            "Invalid workload estimates. Use positive integer memory bytes below 2**63; "
+            "retained must not exceed peak. Check workload estimate defaults and limits."
+        )) if type(reason) is str else "Invalid workload estimates."
+        values = [
+            f"{name}={value}" for name, value in (
+                ("peak_memory_bytes", peak_memory_bytes),
+                ("retained_memory_bytes", retained_memory_bytes),
+            ) if type(value) is int and 0 < value < 2**63
+        ]
+        super().__init__(message + (" " + ", ".join(values) if values else ""))
+
+
 class WorkloadCancelled(WorkloadUnavailable):
     """Admission cancelled with no remaining owned execution."""
 

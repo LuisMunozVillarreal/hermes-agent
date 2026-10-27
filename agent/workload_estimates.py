@@ -21,8 +21,14 @@ def validate_memory_mb(value):
 def validate_estimates(peak=None, retained=None):
     validate_memory_mb(peak)
     validate_memory_mb(retained)
-    if retained is not None and (peak is None or retained > peak):
+    if retained is not None and peak is None:
         raise ValueError("retained memory requires a peak estimate and cannot exceed it")
+    if retained is not None and peak is not None and retained > peak:
+        from agent.workload_provider import WorkloadValidationError
+        raise WorkloadValidationError(
+            "retained-exceeds-peak", peak_memory_bytes=peak * MIB,
+            retained_memory_bytes=retained * MIB,
+        )
 
 
 def estimate_bytes(peak=None, retained=None):
@@ -50,12 +56,42 @@ def current_estimate(kind):
     return dict(scoped[1]) if scoped is not None and kind in scoped[0] else {}
 
 
-def memory_schema(*, retained=False):
+def model_peak_required(kind):
+    """Only model submissions require a peak; scheduled launches keep defaults."""
+    from agent.workload_boundary import execution_provider
+    provider = execution_provider(kind)
+    return provider is not None and getattr(provider, "memory_managed", False) is True
+
+
+def validate_model_estimates(kind, peak=None, retained=None):
+    from agent.workload_provider import WorkloadValidationError
+    validate_estimates(peak, retained)
+    if peak is None and model_peak_required(kind):
+        raise WorkloadValidationError("missing-peak")
+
+
+def model_required_fields(kind, required):
+    # Copy rather than mutate cached/static schemas. Runtime still fails closed
+    # if a configured provider cannot be selected while building tool definitions.
+    from agent.workload_provider import WorkloadUnavailable
+    try:
+        needs_peak = model_peak_required(kind)
+    except WorkloadUnavailable:
+        needs_peak = False
+    return [*required, PEAK_FIELD] if needs_peak else list(required)
+
+
+def memory_schema(*, retained=False, model_created=False):
     description = (
-        "Parent process memory retained while descendants run, included in (not added to) "
-        "estimated_peak_memory_mb. Must not exceed peak. " if retained else
-        "Estimated peak memory for this execution's whole process tree, including parent "
-        "and descendants. Required with protection unless an operator default is configured. "
+        "Optional own execution-unit memory cap, included in estimated_peak_memory_mb, "
+        "not added to it. Must not exceed peak. For separately admitted nested commands, "
+        "reserve peak >= retained + concurrent child peaks. With an explicit peak, "
+        "omitting retained uses the entire peak and leaves no child slack. " if retained else
+        "Estimated peak memory for the whole process subtree, including parent and descendants. "
+        + ("Required for agent-created work under memory-managed admission, even with operator defaults. "
+           if model_created else "Required with protection unless an operator default is configured. ")
+        + "Include realistic parent and nested-command needs. Growth needs explicit scheduler approval; "
+        "a queued child does not automatically grow its parent. "
     )
     return {"type": "integer", "minimum": 1, "maximum": MAX_MEMORY_MIB,
             "description": description + "Positive integer MiB (1 MiB = 1048576 bytes)."}

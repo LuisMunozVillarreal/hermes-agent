@@ -1373,6 +1373,7 @@ def terminal_tool(
     heartbeat: int = 0,
     persist_on_release: bool = False,
     estimated_peak_memory_mb: Optional[int] = None,
+    estimated_retained_memory_mb: Optional[int] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1399,7 +1400,9 @@ def terminal_tool(
     plan = None
     try:
         from agent.workload_estimates import estimate_bytes, estimate_scope
-        with estimate_scope({"terminal", "terminal-pty"}, estimate_bytes(estimated_peak_memory_mb)):
+        with estimate_scope({"terminal", "terminal-pty"}, estimate_bytes(
+            estimated_peak_memory_mb, estimated_retained_memory_mb,
+        )):
             from agent.workload_boundary import execution_provider, require_unmanaged_allowed
             execution_provider("terminal")
             plan = _plan_execution(
@@ -1503,7 +1506,7 @@ def check_terminal_requirements() -> bool:
 
 from tools.registry import registry
 
-from agent.workload_estimates import memory_schema
+from agent.workload_estimates import memory_schema, model_required_fields
 
 TERMINAL_SCHEMA = {
     "name": "terminal",
@@ -1511,7 +1514,8 @@ TERMINAL_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "estimated_peak_memory_mb": memory_schema(),
+            "estimated_peak_memory_mb": memory_schema(model_created=True),
+            "estimated_retained_memory_mb": memory_schema(retained=True),
             "command": {
                 "type": "string",
                 "description": "The shell command to execute"
@@ -1563,6 +1567,14 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from agent.workload_estimates import validate_model_estimates
+    from agent.workload_provider import WorkloadUnavailable
+    try:
+        validate_model_estimates(
+            "terminal", args.get("estimated_peak_memory_mb"), args.get("estimated_retained_memory_mb"),
+        )
+    except (ValueError, WorkloadUnavailable) as exc:
+        return tool_error(str(exc))
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray
@@ -1637,6 +1649,7 @@ def _handle_terminal(args, **kw):
         heartbeat=heartbeat,
         persist_on_release=persist_on_release,
         estimated_peak_memory_mb=args.get("estimated_peak_memory_mb"),
+        estimated_retained_memory_mb=args.get("estimated_retained_memory_mb"),
     )
 
 
@@ -1644,6 +1657,10 @@ registry.register(
     name="terminal",
     toolset="terminal",
     schema=TERMINAL_SCHEMA,
+    dynamic_schema_overrides=lambda: {"parameters": {
+        **TERMINAL_SCHEMA["parameters"],
+        "required": model_required_fields("terminal", TERMINAL_SCHEMA["parameters"]["required"]),
+    }},
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
     emoji="💻",
