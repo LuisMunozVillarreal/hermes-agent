@@ -763,7 +763,7 @@ DELEGATE_TASK_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "estimated_peak_memory_mb": memory_schema(model_created=True),
-                        "estimated_retained_memory_mb": memory_schema(retained=True),
+                        "estimated_retained_memory_mb": memory_schema(retained=True, delegation=True),
                         "goal": _p(
                             "string",
                             "What this subagent should accomplish. Be specific and self-contained — it knows "

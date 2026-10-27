@@ -1237,6 +1237,7 @@ def _run_foreground(
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
     is False for Hermes' own control-plane commands (``_host_local``)."""
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
+    from agent.workload_provider import WorkloadValidationError
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
@@ -1265,6 +1266,9 @@ def _run_foreground(
                                 task_id=task_id, session_key=session_key),
             )
             break
+        except WorkloadValidationError as e:
+            # Retrying unchanged estimates cannot fix a pre-launch validation refusal.
+            return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
             # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.

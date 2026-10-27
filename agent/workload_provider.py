@@ -24,6 +24,16 @@ class WorkloadValidationError(WorkloadUnavailable, ValueError):
                 "Active siblings or higher ancestors may require more capacity. "
                 "No budget was changed; growth is not guaranteed."
             ),
+            "missing-retained": (
+                "estimated_retained_memory_mb is required for model-created delegation "
+                "under memory-managed admission. Reserve the agent's own memory explicitly "
+                "and leave enough peak capacity for its concurrent child commands."
+            ),
+            "missing-child-capacity": (
+                "Delegated agents need child-command capacity: estimated_retained_memory_mb "
+                "must be less than estimated_peak_memory_mb. Budget peak for the agent "
+                "plus its concurrent tools; do not lower realistic retained estimates."
+            ),
             "missing-peak": (
                 "estimated_peak_memory_mb is required for agent-created work under "
                 "memory-managed admission; estimate the whole process-tree peak."

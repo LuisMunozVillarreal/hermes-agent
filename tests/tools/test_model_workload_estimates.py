@@ -127,7 +127,11 @@ def test_model_controls_do_not_require_estimates(managed, entry, action):
         {"goal": "fixture", "tasks": []},
         {
             "tasks": [
-                {"goal": "valid sibling", "estimated_peak_memory_mb": 256},
+                {
+                    "goal": "valid sibling",
+                    "estimated_peak_memory_mb": 256,
+                    "estimated_retained_memory_mb": 128,
+                },
                 {"goal": "missing peak"},
             ]
         },
@@ -195,7 +199,7 @@ def test_terminal_model_missing_peak_refuses_before_execution(
 
 
 @pytest.mark.parametrize("memory_managed", [True, False])
-def test_model_schemas_require_only_peak_conditionally(
+def test_model_schemas_require_estimates_conditionally(
     managed, monkeypatch, memory_managed
 ):
     _, provider = managed
@@ -213,9 +217,11 @@ def test_model_schemas_require_only_peak_conditionally(
         schemas["terminal"],
         schemas["delegate_task"]["properties"]["tasks"]["items"],
     ]
-    for schema in params:
+    for index, schema in enumerate(params):
         assert ("estimated_peak_memory_mb" in schema["required"]) is memory_managed
-        assert "estimated_retained_memory_mb" not in schema["required"]
+        assert ("estimated_retained_memory_mb" in schema["required"]) is (
+            memory_managed and index == 1
+        )
     assert (terminal_tool.TERMINAL_SCHEMA, delegate_tool.DELEGATE_TASK_SCHEMA) == before
 
 
@@ -301,7 +307,7 @@ def test_model_invalid_pair_reports_safe_numbers(managed, monkeypatch, entry):
 @pytest.mark.parametrize(
     "memory",
     [
-        {"estimated_peak_memory_mb": 256},
+        {"estimated_peak_memory_mb": 256, "estimated_retained_memory_mb": 128},
         {"estimated_peak_memory_mb": 512, "estimated_retained_memory_mb": 256},
         {},
     ],
@@ -332,6 +338,34 @@ def test_live_delegation_estimates_reach_execution_owner(managed, shape, memory)
     assert admissions[0].get("retained_memory_bytes") == (
         retained * 1024**2 if retained else None
     )
+
+
+@pytest.mark.parametrize("entry", ["registry", "live"])
+@pytest.mark.parametrize("shape", ["single", "batch", "json-batch"])
+@pytest.mark.parametrize("retained", [None, 256])
+def test_delegation_rejects_missing_retained_or_no_child_slack(
+    managed, monkeypatch, entry, shape, retained
+):
+    task = {"goal": "fixture", "estimated_peak_memory_mb": 256}
+    if retained is not None:
+        task["estimated_retained_memory_mb"] = retained
+    args = (
+        task
+        if shape == "single"
+        else {"tasks": json.dumps([task]) if shape == "json-batch" else [task]}
+    )
+    agent = _agent(managed[0])
+    monkeypatch.setattr(
+        delegate_tool,
+        "_build_child_agent",
+        lambda *a, **k: pytest.fail("invalid allocation launched"),
+    )
+    result = json.loads(
+        agent._dispatch_delegate_task(args)
+        if entry == "live"
+        else registry.dispatch("delegate_task", args, parent_agent=agent)
+    )
+    assert "estimated_retained_memory_mb" in result["error"]
 
 
 def test_automatic_cron_scope_keeps_operator_defaults(managed):

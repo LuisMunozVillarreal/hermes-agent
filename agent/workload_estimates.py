@@ -66,8 +66,14 @@ def model_peak_required(kind):
 def validate_model_estimates(kind, peak=None, retained=None):
     from agent.workload_provider import WorkloadValidationError
     validate_estimates(peak, retained)
-    if peak is None and model_peak_required(kind):
-        raise WorkloadValidationError("missing-peak")
+    if model_peak_required(kind):
+        if peak is None:
+            raise WorkloadValidationError("missing-peak")
+        if kind == "delegation":
+            if retained is None:
+                raise WorkloadValidationError("missing-retained")
+            if retained == peak:
+                raise WorkloadValidationError("missing-child-capacity")
 
 
 def model_required_fields(kind, required):
@@ -78,10 +84,15 @@ def model_required_fields(kind, required):
         needs_peak = model_peak_required(kind)
     except WorkloadUnavailable:
         needs_peak = False
-    return [*required, PEAK_FIELD] if needs_peak else list(required)
+    fields = list(required)
+    if needs_peak:
+        fields.append(PEAK_FIELD)
+        if kind == "delegation":
+            fields.append(RETAINED_FIELD)
+    return fields
 
 
-def memory_schema(*, retained=False, model_created=False):
+def memory_schema(*, retained=False, model_created=False, delegation=False):
     description = (
         "Optional own execution-unit memory cap, included in estimated_peak_memory_mb, "
         "not added to it. Must not exceed peak. For separately admitted nested commands, "
@@ -93,5 +104,12 @@ def memory_schema(*, retained=False, model_created=False):
         + "Include realistic parent and nested-command needs. Growth needs explicit scheduler approval; "
         "a queued child does not automatically grow its parent. "
     )
+    if retained and delegation:
+        description = (
+            "Required for model-created delegation under memory-managed admission. "
+            "The agent's own memory cap, included in peak, not added to it. Must be "
+            "less than peak: reserve peak >= retained + concurrent child-command peaks. "
+            "Use realistic estimates for both; there is no automatic parent growth. "
+        )
     return {"type": "integer", "minimum": 1, "maximum": MAX_MEMORY_MIB,
             "description": description + "Positive integer MiB (1 MiB = 1048576 bytes)."}
