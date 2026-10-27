@@ -1,0 +1,21 @@
+2840e447421dc846f4c3a838730775fa5f0a7048 Port gateway-owned workload queue onto current integration
+6cb7666620b6008c7a50835b8a4d941e8257853d test: isolate startup fixture import-time state paths
+c76cbd51060b19bfb3cb14b938c117392c89861c fix: cancel terminal queue admission at originating deadlines
+cad7f5b000a8e8b723b2d87b5f0ed732ee231bf5 test: make native cron queue expiry explicitly opt in
+25c74b9f3b14cc2edefc077ad74fad83b9921ab2 test: verify capacity defaults through native cron execution
+faa4d95473f557a8e4e0704c4bd7d2c06251b754 docs: describe provider capacity defaults in memory tool schema
+39e224ebe49389576b6bb5a4093a29e94e06770e revert: separate automatic workload estimates from capacity limit fix
+d708e977350033a65c04757863de41902b595419 feat: integrate gateway-owned worker queue on current integration
+5d64835daebd2ccf5f153166a4cad6dee8e278a0 fix: activate managed runtime before isolated worker handshake
+5544bf2fc4ac4333557bcead72fac2aa504ca244 style: remove unused bootstrap lint suppression
+4c556275292039e61e7d30c193791e4901700aa8 feat(delegation): allow explicit memory-managed unlimited admission
+9c6877c97ee5c1c32cdb2b6aa60f90c156a558cc fix(delegation): preserve unlimited spawns and controls in turn guard
+5cdf71066da94e1f0977506b5cc728010f28f37f fix(delegation): report configured capacity without admission probes
+2a920e5d87a8a9d9a68f4bfd91cd22ea6d418fb4 fix(agent): report isolated worker disconnect diagnostics
+9e9ee1b519d3b40bfb4834361d0615c71254914d fix(agent): require model workload peaks and preserve safe validation errors
+dacef5e5b865da509ef2883e3a37e9f2b0e2453c fix(delegation): keep model estimate enforcement out of internal reviews
+15c5829b7453eddf13d5d28678f8781bcdb478d3 test: supply peak estimates in scripted queue model
+63854ed7cbe6c9a26be0a1331594c66f45731bf4 fix: carry provider completion provenance through terminal results
+7fe3c1b944edb9343254895d90b6fb6be8f70cdb fix: preserve unread child completion provenance
+cd574cb65c7188a7699fe0627b515d1a855ef1ef fix(workloads): explain scheduler-approved ancestor growth refusals
+843296ee0af10ec2438526c78532861e9d642304 fix: require delegated child headroom and avoid validation retries
