@@ -144,6 +144,7 @@ def gated_model():
                                 "arguments": json.dumps({
                                     "command": settings["command"],
                                     "timeout": 60,
+                                    "estimated_peak_memory_mb": settings.get("estimated_peak_memory_mb", TOOL_CAP // MIB),
                                 }),
                             },
                         }
@@ -324,6 +325,7 @@ def test_impossible_nested_budget_fails_closed_without_shell(
     url, settings, entered, release, requests = gated_model
     marker = home / "must-not-execute"
     settings["command"] = f"printf bypass > {shlex.quote(str(marker))}"
+    settings["estimated_peak_memory_mb"] = (2 * TOOL_CAP + MIB) // MIB
     # The agent fits; its retained allocation plus the requested terminal does not.
     config = home / "config.yaml"
     config.write_text(
