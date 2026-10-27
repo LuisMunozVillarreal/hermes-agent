@@ -477,6 +477,7 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
+        from tools.process_completion import completion_fields
         if output is None:
             output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
@@ -501,7 +502,7 @@ class BaseEnvironment(ABC):
                     trace.interrupted()
                     _kill_and_join()
                     return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
-                            "hermes_interrupted": True}
+                            "hermes_interrupted": True, **completion_fields(proc)}
                 if yield_handler is not None and consume_yield(watch_interrupt_tid):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
@@ -522,7 +523,8 @@ class BaseEnvironment(ABC):
                     if output.total_chars == 0:
                         rendered = rendered.lstrip()
                     # The flag tells Hermes' own deadline apart from a command's own ``exit 124``.
-                    return {**self._finalize_wait_result(output, rendered, 124), "hermes_timed_out": True}
+                    return {**self._finalize_wait_result(output, rendered, 124), "hermes_timed_out": True,
+                            **completion_fields(proc)}
                 touch_activity_if_due(_activity_state, "terminal command running")
                 trace.heartbeat()
                 time.sleep(_poll_sleep)
@@ -553,6 +555,7 @@ class BaseEnvironment(ABC):
             stdin_thread.join(timeout=5)
         rendered = output.render()
         result = self._finalize_wait_result(output, rendered, proc.returncode)
+        result.update(completion_fields(proc))
         if stdin_errors := getattr(proc, "_hermes_stdin_errors", None):
             result["stdin_error"] = err = str(stdin_errors[0])
             result["output"] = rendered + f"\n[stdin write failed: {err}]"

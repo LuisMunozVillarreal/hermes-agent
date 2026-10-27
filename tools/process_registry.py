@@ -555,6 +555,7 @@ class ProcessSession:
     exited: bool = False
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
+    process_completion: Optional[dict] = None   # provider receipt; None for ordinary Popen
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
     termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
@@ -639,6 +640,14 @@ class ProcessSession:
         """Record an exit. A kill that raced the observer already recorded its own
         exit_code/reason; never overwrite it."""
         self.exited = True
+        from tools.process_completion import completion_fields, exit_status_unknown
+        fields = completion_fields(self.process if self.process is not None else self._pty)
+        if fields:
+            self.process_completion = fields["process_completion"]
+        if exit_status_unknown({"process_completion": self.process_completion}):
+            exit_code = None
+            if reason == "exited":
+                reason = "unknown"
         if self.completion_reason != "killed":
             self.exit_code = exit_code
             self.completion_reason = reason
@@ -1638,6 +1647,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             "exit_code": session.exit_code,
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
+            **({"process_completion": session.process_completion} if session.process_completion else {}),
         }
 
     def _release_finished_handles(self, session: ProcessSession):
@@ -2232,10 +2242,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
-                session.exited = True
-                session.exit_code = -15  # SIGTERM
-                session.completion_reason = "killed"
-                session.termination_source = source
+                from tools.process_completion import reported_exit_code
+                handle = session.process if session.process is not None else session._pty
+                session.mark_exited(reported_exit_code(handle, -15), "killed", source)
             # The reader thread can finalise the session while the signal path
             # blocks in the SIGKILL grace window: its ``save_completed_result``
             # then persists this kill as a plain ``exited``. Re-write the receipt
@@ -2244,8 +2253,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 save_completed_result(session)
             self._write_checkpoint()
             return {
-                "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
-                "termination_source": session.termination_source, **output}
+                "status": "killed", "session_id": session.id, **self._exit_fields(session), **output}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -2486,7 +2494,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         with self._lock:
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
-                    and s.exit_code is not None
+                    and (s.exit_code is not None or s.process_completion is not None)
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,

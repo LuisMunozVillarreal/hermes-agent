@@ -354,6 +354,9 @@ def process_completion_display_text(events: list) -> str:
     if len(events) != 1:
         return f"{len(events)} Background Processes Finished"
     evt = events[0]
+    from tools.process_completion import exit_status_unknown
+    if exit_status_unknown(evt):
+        return "Background Process: exit status unknown"
     reason, exit_code = evt.get("completion_reason") or "exited", evt.get("exit_code", "?")
     if reason == "killed":
         outcome = "Terminated"
@@ -466,6 +469,11 @@ def format_process_notification(evt: dict) -> str | None:
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
+    from tools.process_completion import exit_status_unknown
+    import json
+    status = "exit status unknown" if exit_status_unknown(evt) else f"exit code {_exit}{_signal}"
+    completion = evt.get("process_completion")
+    diagnostic = f"Completion: {json.dumps(completion, ensure_ascii=True)}\n" if completion else ""
     return (
-        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
-        f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")
+        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} ({status}).\n"
+        f"{diagnostic}{attribution}Command: {_cmd}\nOutput:\n{_out}]")

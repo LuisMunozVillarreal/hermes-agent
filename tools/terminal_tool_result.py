@@ -225,6 +225,9 @@ def finalize_foreground_result(
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)
+    from tools.process_completion import exit_status_unknown
+    unknown = exit_status_unknown(result) and not (
+        result.get("hermes_timed_out") or result.get("hermes_interrupted"))
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
     output = _truncate_head_tail(output)
@@ -241,8 +244,8 @@ def finalize_foreground_result(
     # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
     output = redact_terminal_output(output.strip(), command) if output else ""
 
-    exit_note = _interpret_exit_code(command, returncode)
-    failure_hint = _failure_hint(command, returncode, output, exit_note)
+    exit_note = None if unknown else _interpret_exit_code(command, returncode)
+    failure_hint = None if unknown else _failure_hint(command, returncode, output, exit_note)
     # cwd echo when the command changed directory (gated on the observation
     # flag so an interrupted command can't echo another session's cwd).
     changed_cwd = None
@@ -255,14 +258,18 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    result_dict = {
+        "output": output, "exit_code": None if unknown else returncode,
+        "error": "Process transport completed; child exit status is unknown." if unknown else None,
+    }
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
+        ("process_completion", result.get("process_completion")),
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
-        ("verification_evidence", _verification_evidence(
+        ("verification_evidence", None if unknown else _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),
         ("approval", approval_note or None),
