@@ -271,9 +271,15 @@ def _process_accounting_lines(r: dict) -> list:
                      "(subagent process notices never reach you): "
                      + "; ".join(f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)" for o in orphans)
                      + ". Re-launch in this session anything you still need.")
+    from tools.process_completion import exit_status_unknown
+    import json
+
     for u in r.get("unread_completions") or []:
-        lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
-                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}")
+        status = "exit status unknown" if exit_status_unknown(u) else f"exit code {u.get('exit_code')}"
+        completion = u.get("process_completion")
+        diagnostic = f"Completion: {json.dumps(completion, ensure_ascii=True)}\n" if completion else ""
+        lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished ({status}) "
+                     f"but the child never read its result; {diagnostic}output tail:\n{u.get('output_tail', '')}")
     return lines
 
 
