@@ -61,6 +61,28 @@ def test_legacy_provider_errors_remain_redacted(monkeypatch, exception):
         workload_boundary.popen("delegation", ["private-payload"])
 
 
+def test_boundary_preserves_actionable_growth_minimum(monkeypatch):
+    error = workload_provider.WorkloadValidationError(
+        "growth-required",
+        peak_memory_bytes=2448 * 1024**2,
+        retained_memory_bytes=2048 * 1024**2,
+    )
+
+    def reject(kind, args, *, config, **kwargs):
+        raise error
+
+    install_provider(monkeypatch, reject)
+    with pytest.raises(workload_provider.WorkloadValidationError) as caught:
+        workload_boundary.popen("delegation", ["private-payload"])
+    assert caught.value is error
+    message = str(error)
+    assert "growth required" in message
+    assert "absolute" in message and "scheduler-approved" in message
+    assert "peak_memory_bytes=2566914048" in message
+    assert "retained_memory_bytes=2147483648" in message
+    assert "private" not in message
+
+
 def test_validation_diagnostics_never_interpolate_unvalidated_values():
     error = workload_provider.WorkloadValidationError(
         "private-secret",

@@ -16,6 +16,14 @@ class WorkloadValidationError(WorkloadUnavailable, ValueError):
 
     def __init__(self, reason, *, peak_memory_bytes=None, retained_memory_bytes=None):
         messages = {
+            "growth-required": (
+                "Nested admission growth required. The current ancestor envelope cannot "
+                "fit this child even after siblings finish. Request scheduler-approved "
+                "growth before retrying: peak_memory_bytes is the minimum absolute "
+                "ancestor envelope, retained_memory_bytes is its unchanged own cap. "
+                "Active siblings or higher ancestors may require more capacity. "
+                "No budget was changed; growth is not guaranteed."
+            ),
             "missing-peak": (
                 "estimated_peak_memory_mb is required for agent-created work under "
                 "memory-managed admission; estimate the whole process-tree peak."
