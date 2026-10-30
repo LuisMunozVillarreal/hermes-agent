@@ -173,7 +173,7 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     return lines
 
 
-def _agents_delegation_lines(d: dict) -> list[str]:
+def _agents_delegation_lines(d: dict, conversation_label: str = "") -> list[str]:
     """/agents rows for one background delegation. Live per-child activity comes from the
     registry's progress sampler: api calls, current tool, seconds since last activity."""
     goal = _clip(" ".join(str(d.get("goal") or "").split()), 70)
@@ -186,6 +186,8 @@ def _agents_delegation_lines(d: dict) -> list[str]:
         row += t("gateway.agents.quiet_for", seconds=f"{d['seconds_since_progress']:.0f}")
     if goal:
         row += f" · {goal}"
+    if conversation_label:
+        row += f" · {conversation_label}"
     lines = [row]
     for i, child in enumerate(d.get("children_activity") or []):
         if not isinstance(child, dict):
@@ -465,6 +467,19 @@ class GatewayStatusCommandsMixin:
             return [f"{idx}. `{row['session_key']}` · {row['state']} · "
                     f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"]
 
+        def _delegation_row(delegation):
+            label = ""
+            key = delegation.get("session_key")
+            if key and getattr(event.source, "platform", None) == Platform.DISCORD:
+                label = f"`{key}`"
+                # Children can outlive their parent turn; use the cached source, not active agents.
+                source = self._get_cached_session_source(key)
+                if source is not None and source.platform == Platform.DISCORD:
+                    destination = source.thread_id or source.prospective_thread_id or source.chat_id
+                    if destination:
+                        label = f"<#{destination}>"
+            return _agents_delegation_lines(delegation, label)
+
         def _proc_row(proc):
             cmd = _clip(" ".join(str(proc.get("command", "")).split()), 90)
             return [f"- `{proc.get('session_id', '?')}` · "
@@ -477,7 +492,7 @@ class GatewayStatusCommandsMixin:
         lines += ["", t("gateway.agents.async_jobs", count=len(background_tasks))]
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
-            lines += _capped_rows(delegations, _agents_delegation_lines)
+            lines += _capped_rows(delegations, _delegation_row)
         if not (agent_rows or running_processes or background_tasks or delegations):
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)
