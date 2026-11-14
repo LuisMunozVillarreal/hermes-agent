@@ -4382,8 +4382,10 @@ class BasePlatformAdapter(SessionActivityMixin, _SessionModelSettingsMixin, Auto
                             _record_delivery)
                     except Exception as tts_delivery_error:
                         # Keep backend details out of the visible fallback.
+                        from gateway.platforms.base_auto_tts import _safe_exc_info
                         logger.warning("[%s] Auto-TTS delivery failed (%s)",
-                                       self.name, type(tts_delivery_error).__name__)
+                                       self.name, type(tts_delivery_error).__name__,
+                                       exc_info=_safe_exc_info(tts_delivery_error))
                         _tts_error_notice = "Audio could not be fully delivered because TTS failed with the configured provider."
                         break
                     finally:

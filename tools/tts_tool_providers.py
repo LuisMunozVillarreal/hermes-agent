@@ -565,55 +565,8 @@ def _gemini_error_detail(response: Any) -> str:
     return message or raw_body.decode("utf-8", errors="replace")[:300]
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
-    """Generate audio via Gemini ``generateContent`` (``responseModalities=["AUDIO"]``). The reply is
-    base64 24kHz mono 16-bit PCM, wrapped as WAV and ffmpeg-converted to the requested container."""
-    origin = _origin()
-    api_key = origin._resolve_provider_key("GEMINI_API_KEY", "gemini") or origin._resolve_provider_key(
-        "GOOGLE_API_KEY", "gemini")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey")
-    gemini_config = _section(tts_config, "gemini")
-    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
-    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-    from hermes_cli.config import get_env_value
-    from agent.gemini_native_adapter import normalize_gemini_base_url
-    base_url = normalize_gemini_base_url(
-        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
-    )
-    persona_prompt = _read_gemini_persona_prompt(gemini_config)
-    tts_script = text
-    if _gemini_audio_tags_enabled(gemini_config, model):
-        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
-    prompt_text = _compose_gemini_tts_prompt(
-        tts_script, gemini_config, persona_prompt=persona_prompt)
-    # ``tts.gemini.max_text_length`` is the practical spoken-transcript chunk
-    # size used by the public wrapper. Persona/performance direction does not
-    # produce audio duration, so validate the composed request against the
-    # model context separately rather than consuming the transcript budget.
-    if len(prompt_text) > GEMINI_TTS_CONTEXT_MAX_CHARS:
-        raise ValueError(
-            "Gemini TTS composed prompt exceeds the conservative context limit "
-            f"({len(prompt_text)} > {GEMINI_TTS_CONTEXT_MAX_CHARS} chars). "
-            "Reduce the persona or audio-tag prompt."
-        )
-
-    payload: dict[str, Any] = {
-        "contents": [{"parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
-        },
-    }
-    # HTTP errors include request URLs, so credentials must stay in headers.
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
-        try:
-            from hermes_cli.version_info import get_version_info
-            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
-        except Exception:
-            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
-    endpoint = f"{base_url}/models/{model}:generateContent"
+def _gemini_retry_settings(gemini_config):
+    """Bound configured attempt, timeout and delay values before provider I/O."""
     try:
         max_attempts = int(gemini_config.get("max_attempts", 4))
     except (TypeError, ValueError, OverflowError):
@@ -639,6 +592,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
         GEMINI_TTS_MAX_RETRY_DELAY_SECONDS,
         max(0.0, retry_delay),
     )
+    return max_attempts, timeout_seconds, retry_delay
+
+
+def _request_gemini_audio(endpoint, headers, payload, gemini_config):
+    """Retry bounded HTTP/stream failures, keeping permanent errors terminal."""
+    max_attempts, timeout_seconds, retry_delay = _gemini_retry_settings(gemini_config)
     retryable_statuses = {408, 429, 500, 502, 503, 504}
 
     data: Optional[dict[str, Any]] = None
@@ -693,7 +652,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
                         err.get("message")
                         or raw_body.decode("utf-8", errors="replace")[:300]
                     )
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
                     detail = raw_body.decode("utf-8", errors="replace")[:300]
                 raise RuntimeError(
                     f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
@@ -720,6 +679,59 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
             f"Gemini TTS failed after {max_attempts} attempts due to transport errors"
         )
 
+    return data
+
+
+def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
+    """Generate audio via Gemini ``generateContent`` (``responseModalities=["AUDIO"]``). The reply is
+    base64 24kHz mono 16-bit PCM, wrapped as WAV and ffmpeg-converted to the requested container."""
+    origin = _origin()
+    api_key = origin._resolve_provider_key("GEMINI_API_KEY", "gemini") or origin._resolve_provider_key(
+        "GOOGLE_API_KEY", "gemini")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey")
+    gemini_config = _section(tts_config, "gemini")
+    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    from hermes_cli.config import get_env_value
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+    base_url = normalize_gemini_base_url(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
+    )
+    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    tts_script = text
+    if _gemini_audio_tags_enabled(gemini_config, model):
+        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
+    prompt_text = _compose_gemini_tts_prompt(
+        tts_script, gemini_config, persona_prompt=persona_prompt)
+    # ``tts.gemini.max_text_length`` is the practical spoken-transcript chunk
+    # size used by the public wrapper. Persona/performance direction does not
+    # produce audio duration, so validate the composed request against the
+    # model context separately rather than consuming the transcript budget.
+    if len(prompt_text) > GEMINI_TTS_CONTEXT_MAX_CHARS:
+        raise ValueError(
+            "Gemini TTS composed prompt exceeds the conservative context limit "
+            f"({len(prompt_text)} > {GEMINI_TTS_CONTEXT_MAX_CHARS} chars). "
+            "Reduce the persona or audio-tag prompt."
+        )
+
+    payload: dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+        },
+    }
+    # HTTP errors include request URLs, so credentials must stay in headers.
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+        try:
+            from hermes_cli.version_info import get_version_info
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
+        except Exception:
+            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
+    endpoint = f"{base_url}/models/{model}:generateContent"
+    data = _request_gemini_audio(endpoint, headers, payload, gemini_config)
 
     try:
         parts = data["candidates"][0]["content"]["parts"]

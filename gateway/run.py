@@ -2471,11 +2471,9 @@ def _event_media_is_audio(event, index: int) -> bool:
 def _event_media_is_stt_input(event, index: int, transcribe_attachments: bool = False) -> bool:
     """Audio entering auto-STT; file audio is opt-in, and non-audio attachments never qualify."""
     mtype, mime = getattr(event, "message_type", None), _event_media_type_at(event, index).lower()
-    if mtype == MessageType.DOCUMENT:
+    if mtype == MessageType.DOCUMENT or (mtype == MessageType.AUDIO and not transcribe_attachments):
         return False
-    if mtype == MessageType.AUDIO:
-        return transcribe_attachments and (mime.startswith("audio/") or mime in {"", "application/octet-stream"})
-    return mime.startswith("audio/") or (mtype == MessageType.VOICE and mime in {"", "application/octet-stream"})
+    return mime.startswith("audio/") or (mtype in {MessageType.VOICE, MessageType.AUDIO} and mime in {"", "application/octet-stream"})
 
 
 def _event_media_is_video(event, index: int) -> bool:
