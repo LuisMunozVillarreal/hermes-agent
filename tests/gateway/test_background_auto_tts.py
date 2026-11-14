@@ -50,7 +50,7 @@ async def test_blocked_synthesis_does_not_hold_text_or_next_turn(tmp_path):
         started.set()
         await release.wait()
         audio.write_bytes(b"audio")
-        return [str(audio)], str(audio)
+        return [str(audio)], str(audio), None
 
     adapter._synthesize_auto_tts = synthesize
     key = build_session_key(event.source)
@@ -138,7 +138,7 @@ async def test_pending_audio_is_bounded_and_visible_in_agents(tmp_path):
     async def blocked(text, **kwargs):
         started.append(text)
         await release.wait()
-        return [], None
+        return [], None, None
 
     adapter._synthesize_auto_tts = blocked
     try:
@@ -188,7 +188,7 @@ async def test_failure_has_one_anchored_notice_and_cleans_files(tmp_path, monkey
         paths.extend(Path(kwargs["output_dir"]) / name for name in ("first.mp3", "second.mp3"))
         for path in paths:
             path.write_bytes(b"audio")
-        return ([] if failure == "synthesis" else [str(path) for path in paths]), str(paths[0])
+        return ([] if failure == "synthesis" else [str(path) for path in paths]), str(paths[0]), None
 
     adapter._synthesize_auto_tts = synthesize
     if failure != "oversize":
@@ -217,7 +217,7 @@ async def test_failure_logs_traceback_without_provider_secrets(caplog, failure):
     adapter.send = fail if failure == "notice" else AsyncMock()
     adapter.send_voice = fail
     adapter._synthesize_auto_tts = fail if failure == "synthesis" else AsyncMock(
-        return_value=(["unused.mp3"], None))
+        return_value=(["unused.mp3"], None, None))
     if failure == "notice":
         await base_auto_tts._notice(adapter, event, "text-1", {}, "notice")
     else:
@@ -236,7 +236,7 @@ async def test_live_voice_channel_keeps_audio_before_text(tmp_path):
     adapter.set_message_handler(AsyncMock(return_value="reply"))
     audio = tmp_path / "voice.mp3"
     audio.write_bytes(b"audio")
-    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio)))
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio), None))
     order = []
 
     async def play(**kwargs):

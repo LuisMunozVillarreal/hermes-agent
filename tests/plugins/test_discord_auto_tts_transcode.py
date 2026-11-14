@@ -76,7 +76,7 @@ def attachment_adapter():
     async def synthesize(text, *, output_dir):
         audio = Path(output_dir) / "reply.mp3"
         audio.write_bytes(b"ID3-not-ogg")
-        return [str(audio)], str(audio)
+        return [str(audio)], str(audio), None
 
     adapter._synthesize_auto_tts = synthesize
     event = MessageEvent(text="hello", message_type=MessageType.VOICE,
