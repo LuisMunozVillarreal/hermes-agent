@@ -22,3 +22,5 @@ class SessionActivityMixin:
         if session_key and session_key in self._active_sessions:
             self._active_sessions[session_key].set()
         await self._stop_typing_quietly(chat_id, metadata)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        await cancel_auto_tts(self._background_tasks, session_key)
